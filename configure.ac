@@ -1578,6 +1578,7 @@
 	        [ enable_ebpf="yes"],
 	        [ enable_ebpf="no"])
 
+    have_xdp="no"
     if test "$enable_ebpf" = "yes"; then
         AC_CHECK_LIB(elf,elf_begin,,LIBELF="no")
         if test "$LIBELF" = "no"; then
@@ -1601,7 +1602,7 @@
             AC_DEFINE([HAVE_PACKET_EBPF],[1],[Recent ebpf fanout support is available]),
             [],
             [[#include <linux/if_packet.h>]])
-        AC_CHECK_LIB(bpf, bpf_set_link_xdp_fd,have_xdp="yes",have_xdp="no")
+        AC_CHECK_LIB(bpf, bpf_set_link_xdp_fd,have_xdp="yes")
         if test "$have_xdp" = "yes"; then
             AC_DEFINE([HAVE_PACKET_XDP],[1],[XDP support is available])
         fi
@@ -1645,9 +1646,10 @@
         AC_DEFINE([HAVE_DAG],[1],(Endace DAG card support enabled))
     fi
 
-  # libnspr
+# libnspr
     AC_ARG_ENABLE(nspr,
-            AS_HELP_STRING([--disable-nspr],[Disable libnspr support]))
+            AS_HELP_STRING([--disable-nspr],[Disable libnspr support]),
+            [enable_nspr=$enableval],[enable_nspr="yes"])
     AC_ARG_WITH(libnspr_includes,
             [  --with-libnspr-includes=DIR  libnspr include directory],
             [with_libnspr_includes="$withval"],[with_libnspr_includes=no])
@@ -1656,85 +1658,87 @@
             [with_libnspr_libraries="$withval"],[with_libnspr_libraries="no"])
 
     if test "$enable_nspr" != "no"; then
-      # Try pkg-config first:
-      PKG_CHECK_MODULES([libnspr], nspr,, [with_pkgconfig_nspr=no])
-      if test "$with_pkgconfig_nspr" != "no"; then
-          CPPFLAGS="${CPPFLAGS} ${libnspr_CFLAGS}"
-          LIBS="${LIBS} ${libnspr_LIBS}"
-      fi
+        # Try pkg-config first:
+        PKG_CHECK_MODULES([libnspr], nspr,, [with_pkgconfig_nspr=no])
+        if test "$with_pkgconfig_nspr" != "no"; then
+            CPPFLAGS="${CPPFLAGS} ${libnspr_CFLAGS}"
+            LIBS="${LIBS} ${libnspr_LIBS}"
+        fi
 
-      if test "$with_libnspr_includes" != "no"; then
-          CPPFLAGS="${CPPFLAGS} -I${with_libnspr_includes}"
-      fi
+        if test "$with_libnspr_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_libnspr_includes}"
+        fi
 
-      AC_CHECK_HEADER(nspr.h,NSPR="yes",NSPR="no")
-      if test "$NSPR" = "yes"; then
-          if test "$with_libnspr_libraries" != "no"; then
-              LDFLAGS="${LDFLAGS}  -L${with_libnspr_libraries}"
-          fi
+        AC_CHECK_HEADER(nspr.h,NSPR="yes",NSPR="no")
+        if test "$NSPR" = "yes"; then
+            if test "$with_libnspr_libraries" != "no"; then
+                LDFLAGS="${LDFLAGS}  -L${with_libnspr_libraries}"
+            fi
 
-          AC_CHECK_LIB(nspr4, PR_GetCurrentThread,, NSPR="no")
+            AC_CHECK_LIB(nspr4, PR_GetCurrentThread,, NSPR="no")
 
-          if test "$NSPR" = "no"; then
-              echo
-              echo "   ERROR!  libnspr library not found, go get it"
-              echo "   from Mozilla or your distribution:"
-              echo
-              echo "   Ubuntu: apt-get install libnspr4-dev"
-              echo "   Fedora: dnf install nspr-devel"
-              echo "   CentOS/RHEL: yum install nspr-devel"
-              echo
-              exit 1
-          fi
-          enable_nspr="yes"
-      fi
+            if test "$NSPR" = "no"; then
+                echo
+                echo "   ERROR!  libnspr library not found, go get it"
+                echo "   from Mozilla or your distribution:"
+                echo
+                echo "   Ubuntu: apt-get install libnspr4-dev"
+                echo "   Fedora: dnf install nspr-devel"
+                echo "   CentOS/RHEL: yum install nspr-devel"
+                echo
+                exit 1
+            fi
+        else
+            enable_nspr="no"
+        fi
     fi
 
   # libnss
     AC_ARG_ENABLE(nss,
-            AS_HELP_STRING([--disable-nss],[Disable libnss support]))
+            AS_HELP_STRING([--disable-nss],[Disable libnss support]),
+            [enable_nss=$enableval],[enable_nss="yes"])
     AC_ARG_WITH(libnss_includes,
             [  --with-libnss-includes=DIR  libnss include directory],
-            [with_libnss_includes="$withval"],[with_libnss_includes=no])
+            [with_libnss_includes="$withval"],[with_libnss_includes="no"])
     AC_ARG_WITH(libnss_libraries,
             [  --with-libnss-libraries=DIR    libnss library directory],
             [with_libnss_libraries="$withval"],[with_libnss_libraries="no"])
 
     if test "$enable_nss" != "no"; then
-      # Try pkg-config first:
-      PKG_CHECK_MODULES([libnss], nss,, [with_pkgconfig_nss=no])
-      if test "$with_pkgconfig_nss" != "no"; then
-          CPPFLAGS="${CPPFLAGS} ${libnss_CFLAGS}"
-          LIBS="${LIBS} ${libnss_LIBS}"
-      fi
+        # Try pkg-config first:
+        PKG_CHECK_MODULES([libnss], nss,, [with_pkgconfig_nss=no])
+        if test "$with_pkgconfig_nss" != "no"; then
+            CPPFLAGS="${CPPFLAGS} ${libnss_CFLAGS}"
+            LIBS="${LIBS} ${libnss_LIBS}"
+        fi
+        if test "$with_libnss_includes" != "no"; then
+            CPPFLAGS="${CPPFLAGS} -I${with_libnss_includes}"
+        fi
 
-      if test "$with_libnss_includes" != "no"; then
-          CPPFLAGS="${CPPFLAGS} -I${with_libnss_includes}"
-      fi
+        AC_CHECK_HEADER(sechash.h,NSS="yes",NSS="no")
+        if test "$NSS" = "yes"; then
+            if test "$with_libnss_libraries" != "no"; then
+                LDFLAGS="${LDFLAGS}  -L${with_libnss_libraries}"
+            fi
 
-      AC_CHECK_HEADER(sechash.h,NSS="yes",NSS="no")
-      if test "$NSS" = "yes"; then
-          if test "$with_libnss_libraries" != "no"; then
-              LDFLAGS="${LDFLAGS}  -L${with_libnss_libraries}"
-          fi
+            AC_CHECK_LIB(nss3, HASH_Begin,, NSS="no")
+            if test "$NSS" = "no"; then
+                echo
+                echo "   ERROR!  libnss library not found, go get it"
+                echo "   from Mozilla or your distribution:"
+                echo
+                echo "   Ubuntu: apt-get install libnss3-dev"
+                echo "   Fedora: dnf install nss-devel"
+                echo "   CentOS/RHEL: yum install nss-devel"
+                echo
+                exit 1
+            fi
 
-          AC_CHECK_LIB(nss3, HASH_Begin,, NSS="no")
-
-          if test "$NSS" = "no"; then
-              echo
-              echo "   ERROR!  libnss library not found, go get it"
-              echo "   from Mozilla or your distribution:"
-              echo
-              echo "   Ubuntu: apt-get install libnss3-dev"
-              echo "   Fedora: dnf install nss-devel"
-              echo "   CentOS/RHEL: yum install nss-devel"
-              echo
-              exit 1
-          fi
-
-          AC_DEFINE([HAVE_NSS],[1],[libnss available for md5])
-          enable_nss="yes"
-      fi
+            AC_DEFINE([HAVE_NSS],[1],[libnss available for md5/sha1/sha256])
+            enable_nss="yes"
+        else
+            enable_nss="no"
+        fi
     fi
 
   # libmagic
@@ -2166,14 +2170,20 @@ fi
     AM_CONDITIONAL([HAVE_PDFLATEX], [test "x$enable_pdflatex" != "xno"])
 
 # Cargo/Rust.
-    AC_ARG_ENABLE([rust], AS_HELP_STRING([--enable-rust], [Enable Experimental Rust support]))
+    AC_ARG_ENABLE([rust], AS_HELP_STRING([--enable-rust], [Enable Rust support]),
+            [enable_rust="$enableval"], [enable_rust="yes (default)"])
 
     rust_config_enabled="no"        # used in suricata.yaml.in to enable/disable app-layers
     rust_config_comment="#"         # used in suricata.yaml.in to enable/disable eve loggers
     rust_vendor_comment="# "
     have_rust_vendor="no"
+    rust_compiler_version="not set"
+    rust_cargo_version="not set"
 
-    if test "x$enable_rust" != "xyes"; then
+
+    if test "x$enable_rust" != "xyes" && test "x$enable_rust" != "xyes (default)"; then
+      enable_rust="no"
+    elif test "x$enable_python" != "xyes" && test ! -f rust/gen/c-headers/rust-core-gen.h; then
       enable_rust="no"
     else
       # Rust require jansson (json support).
@@ -2185,7 +2195,11 @@ fi
         echo "   Fedora: dnf install jansson-devel"
         echo "   CentOS/RHEL: yum install jansson-devel"
         echo ""
-        exit 1
+        if test "x$enable_rust" = "xyes"; then
+            exit 1
+        fi
+        echo "   Rust support will be disabled."
+        enable_rust="no"
       fi
 
       AC_PATH_PROG(HAVE_CARGO, cargo, "no")
@@ -2201,56 +2215,69 @@ fi
         echo "   Fedora: dnf install cargo"
         echo "   CentOS/RHEL: yum install cargo"
         echo ""
-        exit 1
+        if test "x$enable_rust" = "xyes"; then
+            exit 1
+        fi
+        echo "   Rust support will be disabled."
+        enable_rust="no"
       fi
       if test "x$HAVE_RUST" = "xno"; then
         echo ""
         echo "   ERROR! Rust support requested but rustc not found."
         echo
         echo "   Ubuntu: apt-get install rustc"
+        echo "   Debian <= 9: use rustup to install"
+        echo "   Debian 10: apt-get install rustc"
         echo "   Fedora: dnf install rust"
         echo "   CentOS/RHEL: yum install rust"
         echo ""
-        exit 1
+        if test "x$enable_rust" = "xyes"; then
+            exit 1
+        fi
+        echo "   Rust support will be disabled."
+        enable_rust="no"
       fi
 
-      if test "x$HAVE_CARGO" != "xno"; then
-        if test "x$HAVE_RUSTC" != "xno"; then
-          enable_rust="yes"
-          AC_DEFINE([HAVE_RUST],[1],[Enable Rust language])
-          if test "x$enable_debug" = "xyes"; then
-            RUST_SURICATA_LIB="../rust/target/debug/${RUST_SURICATA_LIBNAME}"
-          else
-            RUST_SURICATA_LIB="../rust/target/release/${RUST_SURICATA_LIBNAME}"
-          fi
-          RUST_LDADD="${RUST_SURICATA_LIB} ${RUST_LDADD}"
-          CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen/c-headers"
-          AC_SUBST(RUST_SURICATA_LIB)
-          AC_SUBST(RUST_LDADD)
-          AC_SUBST([CARGO], [$HAVE_CARGO])
-          if test "x$CARGO_HOME" = "x"; then
+      if test "x$enable_rust" != "xno"; then
+        if test "x$HAVE_CARGO" != "xno"; then
+          if test "x$HAVE_RUSTC" != "xno"; then
+            AC_DEFINE([HAVE_RUST],[1],[Enable Rust language])
+            if test "x$enable_debug" = "xyes"; then
+              RUST_SURICATA_LIB="../rust/target/debug/${RUST_SURICATA_LIBNAME}"
+            else
+              RUST_SURICATA_LIB="../rust/target/release/${RUST_SURICATA_LIBNAME}"
+            fi
+            RUST_LDADD="${RUST_SURICATA_LIB} ${RUST_LDADD}"
+            CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen/c-headers"
+            AC_SUBST(RUST_SURICATA_LIB)
+            AC_SUBST(RUST_LDADD)
+            AC_SUBST([CARGO], [$HAVE_CARGO])
+            if test "x$CARGO_HOME" = "x"; then
               AC_SUBST([CARGO_HOME], [~/.cargo])
-          else
+            else
 	          AC_SUBST([CARGO_HOME], [$CARGO_HOME])
-          fi
-          AC_CHECK_FILES([$srcdir/rust/vendor], [have_rust_vendor="yes"])
-          if test "x$have_rust_vendor" = "xyes"; then
+            fi
+            AC_CHECK_FILES([$srcdir/rust/vendor], [have_rust_vendor="yes"])
+            if test "x$have_rust_vendor" = "xyes"; then
 	          rust_vendor_comment=""
-          fi
+            fi
 
-          rust_config_enabled="yes"
-          rust_config_comment=""
+            rust_config_enabled="yes"
+            rust_config_comment=""
+            rust_compiler_version=$(rustc --version)
+            rust_cargo_version=$(cargo --version)
+          fi
         fi
       fi
     fi
 
-    AM_CONDITIONAL([HAVE_RUST], [test "x$enable_rust" = "xyes"])
+    AM_CONDITIONAL([HAVE_RUST], [test "x$enable_rust" = "xyes" || test "x$enable_rust" = "xyes (default)"])
     AC_SUBST(rust_vendor_comment)
     AC_SUBST(rust_config_enabled)
     AC_SUBST(rust_config_comment)
     AM_CONDITIONAL([HAVE_RUST_VENDOR], [test "x$have_rust_vendor" = "xyes"])
 
-    if test "x$enable_rust" = "xyes"; then
+    if test "x$enable_rust" = "xyes" || test "x$enable_rust" = "xyes (default)"; then
       AC_PATH_PROG(HAVE_CARGO_VENDOR, cargo-vendor, "no")
       if test "x$HAVE_CARGO_VENDOR" = "xno"; then
         echo "   Warning: cargo-vendor not found, but it is only required"
@@ -2401,9 +2428,11 @@ SURICATA_BUILD_CONF="Suricata Configuration:
   Libnet support:                          ${enable_libnet}
   liblz4 support:                          ${enable_liblz4}
 
-  Rust support (experimental):             ${enable_rust}
+  Rust support:                            ${enable_rust}
   Rust strict mode:                        ${enable_rust_strict}
   Rust debug mode:                         ${enable_rust_debug}
+  Rust compiler:                           ${rust_compiler_version}
+  Rust cargo:                              ${rust_cargo_version}
 
   Suricatasc install:                      ${enable_python}
 

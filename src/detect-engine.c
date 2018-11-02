@@ -1993,6 +1993,7 @@ static int DetectEngineThreadCtxInitGlobalKeywords(DetectEngineThreadCtx *det_ct
     const DetectEngineMasterCtx *master = &g_master_de_ctx;
 
     if (master->keyword_id > 0) {
+        // coverity[suspicious_sizeof : FALSE]
         det_ctx->global_keyword_ctxs_array = (void **)SCCalloc(master->keyword_id, sizeof(void *));
         if (det_ctx->global_keyword_ctxs_array == NULL) {
             SCLogError(SC_ERR_DETECT_PREPARE, "setting up thread local detect ctx");
@@ -2039,6 +2040,7 @@ static void DetectEngineThreadCtxDeinitGlobalKeywords(DetectEngineThreadCtx *det
 static int DetectEngineThreadCtxInitKeywords(DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx)
 {
     if (de_ctx->keyword_id > 0) {
+        // coverity[suspicious_sizeof : FALSE]
         det_ctx->keyword_ctxs_array = SCMalloc(de_ctx->keyword_id * sizeof(void *));
         if (det_ctx->keyword_ctxs_array == NULL) {
             SCLogError(SC_ERR_DETECT_PREPARE, "setting up thread local detect ctx");

@@ -60,6 +60,10 @@ stats:
   # The interval field (in seconds) controls at what interval
   # the loggers are invoked.
   interval: 8
+  # Add decode events as stats.
+  #decoder-events: true
+  # Add stream events as stats.
+  #stream-events: false
 
 # Configure the type of alert (and other) logging you would like.
 outputs:
@@ -101,6 +105,19 @@ outputs:
       #metadata: no
 
       pcap-file: false
+
+      # Community Flow ID
+      # Adds a 'community_id' field to EVE records. These are meant to give
+      # a records a predictable flow id that can be used to match records to
+      # output of other tools such as Bro.
+      #
+      # Takes a 'seed' that needs to be same across sensors and tools
+      # to make the id less predictable.
+
+      # enable/disable the community id feature.
+      community-id: false
+      # Seed value for the ID output. Valid values are 0-65535.
+      community-id-seed: 0
 
       # HTTP X-Forwarded-For support by adding an extra field or overwriting
       # the source or destination IP address (depending on flow direction)
@@ -176,7 +193,7 @@ outputs:
             #session-resumption: no
             # custom allows to control which tls fields that are included
             # in eve-log
-            #custom: [subject, issuer, session_resumed, serial, fingerprint, sni, version, not_before, not_after, certificate, chain]
+            #custom: [subject, issuer, session_resumed, serial, fingerprint, sni, version, not_before, not_after, certificate, chain, ja3]
         - files:
             force-magic: no   # force logging magic on all logged files
             # force logging of checksums, available hash functions are md5,
@@ -1000,7 +1017,7 @@ app-layer:
         dp: 44818
         sp: 44818
 
-    # Note: parser depends on experimental Rust support
+    # Note: parser depends on Rust support
     ntp:
       enabled: @rust_config_enabled@
 
@@ -1646,12 +1663,12 @@ nflog:
 
 # general settings affecting packet capture
 capture:
-  # disable NIC offloading. It's restored when Suricata exists.
-  # Enabled by default
+  # disable NIC offloading. It's restored when Suricata exits.
+  # Enabled by default.
   #disable-offloading: false
   #
   # disable checksum validation. Same as setting '-k none' on the
-  # commandline
+  # commandline.
   #checksum-validation: none
 
 # Netmap support
@@ -1708,9 +1725,9 @@ netmap:
 # for more info see http://www.ntop.org/products/pf_ring/
 pfring:
   - interface: eth0
-    # Number of receive threads (>1 will enable experimental flow pinned
-    # runmode)
-    threads: 1
+    # Number of receive threads. If set to 'auto' Suricata will first try
+    # to use CPU (core) count and otherwise RSS queue count.
+    threads: auto
 
     # Default clusterid.  PF_RING will load balance packets based on flow.
     # All threads/processes that will participate need to have the same
@@ -1720,6 +1737,7 @@ pfring:
     # Default PF_RING cluster type. PF_RING can load balance per flow.
     # Possible values are cluster_flow or cluster_round_robin.
     cluster-type: cluster_flow
+
     # bpf filter for this interface
     #bpf-filter: tcp
 

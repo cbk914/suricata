@@ -110,6 +110,10 @@ enum {
    to log TLSv1.3 sessions. */
 #define SSL_AL_FLAG_LOG_WITHOUT_CERT            BIT_U32(22)
 
+/* Encountered a early data extension in client hello. This extension is
+   used by 0-RTT. */
+#define SSL_AL_FLAG_EARLY_DATA                  BIT_U32(23)
+
 /* config flags */
 #define SSL_TLS_LOG_PEM                         (1 << 0)
 
@@ -118,6 +122,7 @@ enum {
 #define SSL_EXTENSION_ELLIPTIC_CURVES           0x000a
 #define SSL_EXTENSION_EC_POINT_FORMATS          0x000b
 #define SSL_EXTENSION_SESSION_TICKET            0x0023
+#define SSL_EXTENSION_EARLY_DATA                0x002a
 #define SSL_EXTENSION_SUPPORTED_VERSIONS        0x002b
 
 /* SNI types */
@@ -150,6 +155,11 @@ enum {
     TLS_VERSION_13_DRAFT17 = 0x7f11,
     TLS_VERSION_13_DRAFT16 = 0x7f10,
     TLS_VERSION_13_PRE_DRAFT16 = 0x7f01,
+    TLS_VERSION_13_DRAFT20_FB = 0xfb14,
+    TLS_VERSION_13_DRAFT21_FB = 0xfb15,
+    TLS_VERSION_13_DRAFT22_FB = 0xfb16,
+    TLS_VERSION_13_DRAFT23_FB = 0xfb17,
+    TLS_VERSION_13_DRAFT26_FB = 0xfb1a,
 };
 
 typedef struct SSLCertsChain_ {

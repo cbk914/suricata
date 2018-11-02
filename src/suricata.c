@@ -509,6 +509,7 @@ static void SetBpfStringFromFile(char *filename)
     }
     bpf_len = st.st_size + 1;
 
+    // coverity[toctou : FALSE]
     fp = fopen(filename,"r");
     if (fp == NULL) {
         SCLogError(SC_ERR_FOPEN, "Failed to open file %s", filename);
@@ -945,7 +946,7 @@ static TmEcode LoadYamlConfig(SCInstance *suri)
     SCReturnInt(TM_ECODE_OK);
 }
 
-static TmEcode ParseInterfacesList(int runmode, char *pcap_dev)
+static TmEcode ParseInterfacesList(const int runmode, char *pcap_dev)
 {
     SCEnter();
 
@@ -1119,8 +1120,6 @@ static int ParseCommandLineAfpacket(SCInstance *suri, const char *in_arg)
             strlcpy(suri->pcap_dev, in_arg, sizeof(suri->pcap_dev));
         }
     } else if (suri->run_mode == RUNMODE_AFP_DEV) {
-        SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
-                "multiple devices to get packets is experimental.");
         if (in_arg) {
             LiveRegisterDeviceName(in_arg);
         } else {
@@ -1174,8 +1173,6 @@ static int ParseCommandLinePcapLive(SCInstance *suri, const char *in_arg)
                 "support is not (yet) supported on Windows.");
         return TM_ECODE_FAILED;
 #else
-        SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
-                "multiple pcap devices to get packets is experimental.");
         LiveRegisterDeviceName(suri->pcap_dev);
 #endif
     } else {
@@ -1623,8 +1620,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                                  (strlen(optarg) + 1) : sizeof(suri->pcap_dev)));
                     }
                 } else if (suri->run_mode == RUNMODE_NETMAP) {
-                    SCLogWarning(SC_WARN_PCAP_MULTI_DEV_EXPERIMENTAL, "using "
-                            "multiple devices to get packets is experimental.");
                     if (optarg) {
                         LiveRegisterDeviceName(optarg);
                     } else {
@@ -1861,7 +1856,7 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 }
 #else
                 SCLogError(SC_ERR_WINDIVERT_NOSUPPORT,"WinDivert not enabled. Make sure to pass --enable-windivert to configure when building.");
-                return TM_ECODE_FAILED;            
+                return TM_ECODE_FAILED;
 #endif /* WINDIVERT */
             }
             else if (strcmp((long_opts[option_index]).name, "set") == 0) {
@@ -2025,8 +2020,18 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 PrintUsage(argv[0]);
                 return TM_ECODE_FAILED;
             }
+#ifdef OS_WIN32
+            struct _stat buf;
+            if(_stat(optarg, &buf) != 0) {
+#else
+            struct stat buf;
+            if (stat(optarg, &buf) != 0) {
+#endif /* OS_WIN32 */
+                SCLogError(SC_ERR_INITIALIZATION, "ERROR: Pcap file does not exist\n");
+                return TM_ECODE_FAILED;
+            }
             if (ConfSetFinal("pcap-file.file", optarg) != 1) {
-                fprintf(stderr, "ERROR: Failed to set pcap-file.file\n");
+                SCLogError(SC_ERR_INITIALIZATION, "ERROR: Failed to set pcap-file.file\n");
                 return TM_ECODE_FAILED;
             }
 
@@ -2117,6 +2122,9 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         SCLogError(SC_ERR_INITIALIZATION, "can't use -l and unix socket runmode at the same time");
         return TM_ECODE_FAILED;
     }
+
+    /* save the runmode from the commandline (if any) */
+    suri->aux_run_mode = suri->run_mode;
 
     if (list_app_layer_protocols)
         suri->run_mode = RUNMODE_LIST_APP_LAYERS;
@@ -2966,7 +2974,7 @@ int main(int argc, char **argv)
     LogVersion();
     UtilCpuPrintSummary();
 
-    if (ParseInterfacesList(suricata.run_mode, suricata.pcap_dev) != TM_ECODE_OK) {
+    if (ParseInterfacesList(suricata.aux_run_mode, suricata.pcap_dev) != TM_ECODE_OK) {
         exit(EXIT_FAILURE);
     }
 

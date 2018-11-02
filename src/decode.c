@@ -67,6 +67,9 @@
 #include "output.h"
 #include "output-flow.h"
 
+extern bool stats_decoder_events;
+extern bool stats_stream_events;
+
 int DecodeTunnel(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p,
         uint8_t *pkt, uint32_t len, PacketQueue *pq, enum DecodeTunnelProto proto)
 {
@@ -106,18 +109,24 @@ void PacketFree(Packet *p)
  * functions when decoding has been succesful.
  *
  */
-
 void PacketDecodeFinalize(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p)
 {
-
     if (p->flags & PKT_IS_INVALID) {
         StatsIncr(tv, dtv->counter_invalid);
-        int i = 0;
-        for (i = 0; i < p->events.cnt; i++) {
-            if (EVENT_IS_DECODER_PACKET_ERROR(p->events.events[i])) {
-                StatsIncr(tv, dtv->counter_invalid_events[p->events.events[i]]);
-            }
-        }
+    }
+}
+
+void PacketUpdateEngineEventCounters(ThreadVars *tv,
+        DecodeThreadVars *dtv, Packet *p)
+{
+    for (uint8_t i = 0; i < p->events.cnt; i++) {
+        const uint8_t e = p->events.events[i];
+
+        if (e <= DECODE_EVENT_PACKET_MAX && !stats_decoder_events)
+            continue;
+        if (e > DECODE_EVENT_PACKET_MAX && !stats_stream_events)
+            continue;
+        StatsIncr(tv, dtv->counter_engine_events[e]);
     }
 }
 
@@ -451,10 +460,15 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
     dtv->counter_defrag_max_hit =
         StatsRegisterCounter("defrag.max_frag_hits", tv);
 
-    int i = 0;
-    for (i = 0; i < DECODE_EVENT_PACKET_MAX; i++) {
+    for (int i = 0; i < DECODE_EVENT_MAX; i++) {
         BUG_ON(i != (int)DEvents[i].code);
-        dtv->counter_invalid_events[i] = StatsRegisterCounter(
+
+        if (i <= DECODE_EVENT_PACKET_MAX && !stats_decoder_events)
+            continue;
+        if (i > DECODE_EVENT_PACKET_MAX && !stats_stream_events)
+            continue;
+
+        dtv->counter_engine_events[i] = StatsRegisterCounter(
                 DEvents[i].event_name, tv);
     }
 
