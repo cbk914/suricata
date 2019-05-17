@@ -46,6 +46,7 @@
 #include "alert-prelude.h"
 #include "alert-syslog.h"
 #include "output-json-alert.h"
+#include "output-json-anomaly.h"
 #include "output-json-flow.h"
 #include "output-json-netflow.h"
 #include "log-cf-common.h"
@@ -53,14 +54,12 @@
 #include "output-json-drop.h"
 #include "log-httplog.h"
 #include "output-json-http.h"
-#include "log-dnslog.h"
 #include "output-json-dns.h"
 #include "log-tlslog.h"
 #include "log-tlsstore.h"
 #include "output-json-tls.h"
 #include "output-json-ssh.h"
 #include "log-pcap.h"
-#include "log-file.h"
 #include "output-json-file.h"
 #include "output-json-smtp.h"
 #include "output-json-stats.h"
@@ -1070,12 +1069,10 @@ void OutputRegisterLoggers(void)
     /* pcap log */
     PcapLogRegister();
     /* file log */
-    LogFileLogRegister();
     JsonFileLogRegister();
     LogFilestoreRegister();
     OutputFilestoreRegister();
-    /* dns log */
-    LogDnsLogRegister();
+    /* dns */
     JsonDnsLogRegister();
     /* tcp streaming data */
     LogTcpDataLogRegister();
@@ -1083,6 +1080,7 @@ void OutputRegisterLoggers(void)
     LogStatsLogRegister();
 
     JsonAlertLogRegister();
+    JsonAnomalyLogRegister();
     /* flow/netflow */
     JsonFlowLogRegister();
     JsonNetFlowLogRegister();

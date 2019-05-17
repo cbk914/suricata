@@ -419,8 +419,10 @@ void StreamTcpReassembleFree(char quiet)
     SCMutexDestroy(&segment_thread_pool_mutex);
 
 #ifdef DEBUG
-    SCLogInfo("segment_pool_memuse %"PRIu64"", segment_pool_memuse);
-    SCLogInfo("segment_pool_memcnt %"PRIu64"", segment_pool_memcnt);
+    if (segment_pool_memuse > 0)
+        SCLogInfo("segment_pool_memuse %"PRIu64"", segment_pool_memuse);
+    if (segment_pool_memcnt > 0)
+        SCLogInfo("segment_pool_memcnt %"PRIu64"", segment_pool_memcnt);
     SCMutexDestroy(&segment_pool_memuse_mutex);
 #endif
 }
@@ -1400,69 +1402,69 @@ static int StreamReassembleRawInline(TcpSession *ssn, const Packet *p,
     }
 
     /* this can only happen if the segment insert of our current 'p' failed */
-    if (mydata == NULL || mydata_len == 0) {
-        SCLogDebug("no data: %p/%u", mydata, mydata_len);
-        *progress_out = STREAM_RAW_PROGRESS(stream);
-        return 0;
-    }
-    if (mydata_offset >= packet_rightedge_abs ||
-        (packet_leftedge_abs >= (mydata_offset + mydata_len))) {
-        SCLogDebug("no data overlap: %p/%u", mydata, mydata_len);
-        *progress_out = STREAM_RAW_PROGRESS(stream);
-        return 0;
-    }
-
-    /* adjust buffer to match chunk_size */
-
     uint64_t mydata_rightedge_abs = mydata_offset + mydata_len;
-    SCLogDebug("chunk_size %u mydata_len %u", chunk_size, mydata_len);
-    if (mydata_len > chunk_size) {
-        uint32_t excess = mydata_len - chunk_size;
-        SCLogDebug("chunk_size %u mydata_len %u excess %u", chunk_size, mydata_len, excess);
+    if ((mydata == NULL || mydata_len == 0) || /* no data */
+            (mydata_offset >= packet_rightedge_abs || /* data all to the right */
+             packet_leftedge_abs >= mydata_rightedge_abs) || /* data all to the left */
+            (packet_leftedge_abs < mydata_offset || /* data missing at the start */
+             packet_rightedge_abs > mydata_rightedge_abs)) /* data missing at the end */
+    {
+        /* no data, or data is incomplete or wrong: use packet data */
+        mydata = p->payload;
+        mydata_len = p->payload_len;
+        mydata_offset = packet_leftedge_abs;
+        //mydata_rightedge_abs = packet_rightedge_abs;
+    } else {
+        /* adjust buffer to match chunk_size */
+        SCLogDebug("chunk_size %u mydata_len %u", chunk_size, mydata_len);
+        if (mydata_len > chunk_size) {
+            uint32_t excess = mydata_len - chunk_size;
+            SCLogDebug("chunk_size %u mydata_len %u excess %u", chunk_size, mydata_len, excess);
 
-        if (mydata_rightedge_abs == packet_rightedge_abs) {
-            mydata += excess;
-            mydata_len -= excess;
-            mydata_offset += excess;
-            SCLogDebug("cutting front of the buffer with %u", excess);
-        } else if (mydata_offset == packet_leftedge_abs) {
-            mydata_len -= excess;
-            SCLogDebug("cutting tail of the buffer with %u", excess);
-        } else {
-            uint32_t before = (uint32_t)(packet_leftedge_abs - mydata_offset);
-            uint32_t after = (uint32_t)(mydata_rightedge_abs - packet_rightedge_abs);
-            SCLogDebug("before %u after %u", before, after);
-
-            if (after >= (chunk_size - p->payload_len) / 2) {
-                // more trailing data than we need
-
-                if (before >= (chunk_size - p->payload_len) / 2) {
-                    // also more heading data, devide evenly
-                    before = after = (chunk_size - p->payload_len) / 2;
-                } else {
-                    // heading data is less than requested, give the
-                    // rest to the trailing data
-                    after = (chunk_size - p->payload_len) - before;
-                }
+            if (mydata_rightedge_abs == packet_rightedge_abs) {
+                mydata += excess;
+                mydata_len -= excess;
+                mydata_offset += excess;
+                SCLogDebug("cutting front of the buffer with %u", excess);
+            } else if (mydata_offset == packet_leftedge_abs) {
+                mydata_len -= excess;
+                SCLogDebug("cutting tail of the buffer with %u", excess);
             } else {
-                // less trailing data than requested
+                uint32_t before = (uint32_t)(packet_leftedge_abs - mydata_offset);
+                uint32_t after = (uint32_t)(mydata_rightedge_abs - packet_rightedge_abs);
+                SCLogDebug("before %u after %u", before, after);
 
-                if (before >= (chunk_size - p->payload_len) / 2) {
-                    before = (chunk_size - p->payload_len) - after;
+                if (after >= (chunk_size - p->payload_len) / 2) {
+                    // more trailing data than we need
+
+                    if (before >= (chunk_size - p->payload_len) / 2) {
+                        // also more heading data, devide evenly
+                        before = after = (chunk_size - p->payload_len) / 2;
+                    } else {
+                        // heading data is less than requested, give the
+                        // rest to the trailing data
+                        after = (chunk_size - p->payload_len) - before;
+                    }
                 } else {
-                    // both smaller than their requested size
-                }
-            }
+                    // less trailing data than requested
 
-            /* adjust the buffer */
-            uint32_t skip = (uint32_t)(packet_leftedge_abs - mydata_offset) - before;
-            uint32_t cut = (uint32_t)(mydata_rightedge_abs - packet_rightedge_abs) - after;
-            DEBUG_VALIDATE_BUG_ON(skip > mydata_len);
-            DEBUG_VALIDATE_BUG_ON(cut > mydata_len);
-            DEBUG_VALIDATE_BUG_ON(skip + cut > mydata_len);
-            mydata += skip;
-            mydata_len -= (skip + cut);
-            mydata_offset += skip;
+                    if (before >= (chunk_size - p->payload_len) / 2) {
+                        before = (chunk_size - p->payload_len) - after;
+                    } else {
+                        // both smaller than their requested size
+                    }
+                }
+
+                /* adjust the buffer */
+                uint32_t skip = (uint32_t)(packet_leftedge_abs - mydata_offset) - before;
+                uint32_t cut = (uint32_t)(mydata_rightedge_abs - packet_rightedge_abs) - after;
+                DEBUG_VALIDATE_BUG_ON(skip > mydata_len);
+                DEBUG_VALIDATE_BUG_ON(cut > mydata_len);
+                DEBUG_VALIDATE_BUG_ON(skip + cut > mydata_len);
+                mydata += skip;
+                mydata_len -= (skip + cut);
+                mydata_offset += skip;
+            }
         }
     }
 
@@ -2164,6 +2166,7 @@ static int StreamTcpReassembleTest37(void)
     uint8_t packet[1460] = "";
     PacketQueue pq;
     ThreadVars tv;
+    memset(&tv, 0, sizeof (ThreadVars));
 
     Packet *p = PacketGetFromAlloc();
     FAIL_IF(unlikely(p == NULL));
@@ -2712,10 +2715,8 @@ static int StreamTcpReassembleTest39 (void)
 
 static int StreamTcpReassembleTest40 (void)
 {
-    int ret = 0;
     Packet *p = PacketGetFromAlloc();
-    if (unlikely(p == NULL))
-        return 0;
+    FAIL_IF_NULL(p);
     Flow *f = NULL;
     TCPHdr tcph;
     TcpSession ssn;
@@ -2728,7 +2729,8 @@ static int StreamTcpReassembleTest40 (void)
     StreamTcpInitConfig(TRUE);
     StreamTcpUTSetupSession(&ssn);
 
-    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(NULL);
+    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(&tv);
+    FAIL_IF_NULL(ra_ctx);
 
     uint8_t httpbuf1[] = "P";
     uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */
@@ -2748,8 +2750,7 @@ static int StreamTcpReassembleTest40 (void)
     ssn.client.isn = 9;
 
     f = UTHBuildFlow(AF_INET, "1.2.3.4", "1.2.3.5", 200, 220);
-    if (f == NULL)
-        goto end;
+    FAIL_IF_NULL(f);
     f->protoctx = &ssn;
     f->proto = IPPROTO_TCP;
     p->flow = f;
@@ -2760,19 +2761,13 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_flags = TH_ACK|TH_PUSH;
     p->tcph = &tcph;
     p->flowflags = FLOW_PKT_TOSERVER;
-
     p->payload = httpbuf1;
     p->payload_len = httplen1;
     ssn.state = TCP_ESTABLISHED;
+    TcpStream *s = &ssn.client;
+    SCLogDebug("1 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
-    TcpStream *s = NULL;
-    s = &ssn.client;
-
-    FLOWLOCK_WRLOCK(f);
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (1): ");
-        goto end;
-    }
     p->flowflags = FLOW_PKT_TOCLIENT;
     p->payload = httpbuf2;
     p->payload_len = httplen2;
@@ -2780,11 +2775,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(11);
     s = &ssn.server;
     ssn.server.last_ack = 11;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (3): ");
-        goto end;
-    }
+    SCLogDebug("2 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload = httpbuf3;
@@ -2793,11 +2785,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(55);
     s = &ssn.client;
     ssn.client.last_ack = 55;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (5): ");
-        goto end;
-    }
+    SCLogDebug("3 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     p->flowflags = FLOW_PKT_TOCLIENT;
     p->payload = httpbuf2;
@@ -2806,11 +2795,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(12);
     s = &ssn.server;
     ssn.server.last_ack = 12;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (6): ");
-        goto end;
-    }
+    SCLogDebug("4 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     /* check is have the segment in the list and flagged or not */
     TcpSegment *seg = RB_MIN(TCPSEG, &ssn.client.seg_tree);
@@ -2824,11 +2810,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(100);
     s = &ssn.client;
     ssn.client.last_ack = 100;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (10): ");
-        goto end;
-    }
+    SCLogDebug("5 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     p->flowflags = FLOW_PKT_TOCLIENT;
     p->payload = httpbuf2;
@@ -2837,11 +2820,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(13);
     s = &ssn.server;
     ssn.server.last_ack = 13;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (11): ");
-        goto end;
-    }
+    SCLogDebug("6 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     p->flowflags = FLOW_PKT_TOSERVER;
     p->payload = httpbuf5;
@@ -2850,11 +2830,8 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(145);
     s = &ssn.client;
     ssn.client.last_ack = 145;
-
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (14): ");
-        goto end;
-    }
+    SCLogDebug("7 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
 
     p->flowflags = FLOW_PKT_TOCLIENT;
     p->payload = httpbuf2;
@@ -2863,25 +2840,16 @@ static int StreamTcpReassembleTest40 (void)
     tcph.th_ack = htonl(16);
     s = &ssn.server;
     ssn.server.last_ack = 16;
+    SCLogDebug("8 -- start");
+    FAIL_IF(StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1);
+    FAIL_IF(f->alproto != ALPROTO_HTTP);
 
-    if (StreamTcpReassembleHandleSegment(&tv, ra_ctx, &ssn, s, p, &pq) == -1) {
-        printf("failed in segments reassembly, while processing toserver packet (15): ");
-        goto end;
-    }
-    if (f->alproto != ALPROTO_HTTP) {
-        printf("app layer proto has not been detected (18): ");
-        goto end;
-    }
-
-    ret = 1;
-end:
     StreamTcpUTClearSession(&ssn);
     StreamTcpReassembleFreeThreadCtx(ra_ctx);
     StreamTcpFreeConfig(TRUE);
     SCFree(p);
-    FLOWLOCK_UNLOCK(f);
     UTHFreeFlow(f);
-    return ret;
+    PASS;
 }
 
 /** \test   Test the memcap incrementing/decrementing and memcap check */
@@ -3007,7 +2975,7 @@ static int StreamTcpReassembleTest47 (void)
     memset(&tv, 0, sizeof (ThreadVars));
     StreamTcpInitConfig(TRUE);
     StreamTcpUTSetupSession(&ssn);
-    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(NULL);
+    TcpReassemblyThreadCtx *ra_ctx = StreamTcpReassembleInitThreadCtx(&tv);
 
     uint8_t httpbuf1[] = "GET /EVILSUFF HTTP/1.1\r\n\r\n";
     uint32_t httplen1 = sizeof(httpbuf1) - 1; /* minus the \0 */

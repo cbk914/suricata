@@ -771,6 +771,11 @@ static inline int TLSDecodeHSHelloCipherSuites(SSLState *ssl_state,
         if (!(HAS_SPACE(cipher_suites_length)))
             goto invalid_length;
 
+        /* Cipher suites length should always be divisible by 2 */
+        if ((cipher_suites_length % 2) != 0) {
+            goto invalid_length;
+        }
+
         if (ssl_config.enable_ja3) {
             int rc;
 
@@ -2619,10 +2624,11 @@ static void SSLStateTransactionFree(void *state, uint64_t tx_id)
     /* do nothing */
 }
 
-static uint16_t SSLProbingParser(Flow *f, uint8_t *input, uint32_t ilen)
+static AppProto SSLProbingParser(Flow *f, uint8_t direction,
+        uint8_t *input, uint32_t ilen, uint8_t *rdir)
 {
     /* probably a rst/fin sending an eof */
-    if (ilen == 0)
+    if (ilen < 3)
         return ALPROTO_UNKNOWN;
 
     /* for now just the 3 byte header ones */

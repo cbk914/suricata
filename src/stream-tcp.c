@@ -927,6 +927,12 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
             StatsIncr(tv, stt->counter_tcp_sessions);
             StatsIncr(tv, stt->counter_tcp_midstream_pickups);
         }
+
+        /* reverse packet and flow */
+        SCLogDebug("reversing flow and packet");
+        PacketSwap(p);
+        FlowSwap(p->flow);
+
         /* set the state */
         StreamTcpPacketSetState(p, ssn, TCP_SYN_RECV);
         SCLogDebug("ssn %p: =~ midstream picked ssn state is now "
@@ -1001,9 +1007,7 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
             SCLogDebug("ssn %p: SYN/ACK with SACK permitted, assuming "
                     "SACK permitted for both sides", ssn);
         }
-
-        /* packet thinks it is in the wrong direction, flip it */
-        StreamTcpPacketSwitchDir(ssn, p);
+        return 0;
 
     } else if (p->tcph->th_flags & TH_SYN) {
         if (ssn == NULL) {
@@ -4765,10 +4769,14 @@ int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
             goto skip;
         }
 
-        /* check if the packet is in right direction, when we missed the
-           SYN packet and picked up midstream session. */
-        if (ssn->flags & STREAMTCP_FLAG_MIDSTREAM_SYNACK)
-            StreamTcpPacketSwitchDir(ssn, p);
+        if (p->flow->flags & FLOW_WRONG_THREAD ||
+            ssn->client.flags & STREAMTCP_STREAM_FLAG_GAP ||
+            ssn->server.flags & STREAMTCP_STREAM_FLAG_GAP)
+        {
+            /* Stream and/or session in known bad condition. Block events
+             * from being set. */
+            p->flags |= PKT_STREAM_NO_EVENTS;
+        }
 
         if (StreamTcpPacketIsKeepAlive(ssn, p) == 1) {
             goto skip;
@@ -6034,6 +6042,10 @@ static void StreamTcpPseudoPacketCreateDetectLogFlush(ThreadVars *tv,
     np->flags |= PKT_HAS_FLOW;
     np->flags |= PKT_IGNORE_CHECKSUM;
     np->flags |= PKT_PSEUDO_DETECTLOG_FLUSH;
+    np->vlan_id[0] = f->vlan_id[0];
+    np->vlan_id[1] = f->vlan_id[1];
+    np->vlan_idx = f->vlan_idx;
+    np->livedev = (struct LiveDevice_ *)f->livedev;
 
     if (f->flags & FLOW_NOPACKET_INSPECTION) {
         DecodeSetNoPacketInspectionFlag(np);
@@ -8305,7 +8317,7 @@ static int StreamTcpTest18 (void)
     TcpStream stream;
     Packet *p = SCMalloc(SIZE_OF_PACKET);
     if (unlikely(p == NULL))
-    return 0;
+        return 0;
     IPV4Hdr ipv4h;
     int ret = 0;
 
@@ -8354,7 +8366,7 @@ static int StreamTcpTest19 (void)
     TcpStream stream;
     Packet *p = SCMalloc(SIZE_OF_PACKET);
     if (unlikely(p == NULL))
-    return 0;
+        return 0;
     IPV4Hdr ipv4h;
     int ret = 0;
 
@@ -8406,7 +8418,7 @@ static int StreamTcpTest20 (void)
     TcpStream stream;
     Packet *p = SCMalloc(SIZE_OF_PACKET);
     if (unlikely(p == NULL))
-    return 0;
+        return 0;
     IPV4Hdr ipv4h;
     int ret = 0;
 
@@ -8458,7 +8470,7 @@ static int StreamTcpTest21 (void)
     TcpStream stream;
     Packet *p = SCMalloc(SIZE_OF_PACKET);
     if (unlikely(p == NULL))
-    return 0;
+        return 0;
     IPV4Hdr ipv4h;
     int ret = 0;
 
@@ -8510,7 +8522,7 @@ static int StreamTcpTest22 (void)
     TcpStream stream;
     Packet *p = SCMalloc(SIZE_OF_PACKET);
     if (unlikely(p == NULL))
-    return 0;
+        return 0;
     IPV4Hdr ipv4h;
     int ret = 0;
 
@@ -8629,6 +8641,7 @@ static int StreamTcpTest24(void)
     TCPHdr tcph;
     uint8_t packet[1460] = "";
     ThreadVars tv;
+    memset(&tv, 0, sizeof (ThreadVars));
     PacketQueue pq;
     memset(&pq,0,sizeof(PacketQueue));
 
@@ -8637,7 +8650,6 @@ static int StreamTcpTest24(void)
 
     memset(p, 0, SIZE_OF_PACKET);
     memset(&f, 0, sizeof (Flow));
-    memset(&tv, 0, sizeof (ThreadVars));
     memset(&tcph, 0, sizeof (TCPHdr));
     FLOW_INITIALIZE(&f);
     ssn.client.os_policy = OS_POLICY_BSD;
@@ -10827,4 +10839,3 @@ void StreamTcpRegisterTests (void)
     StreamTcpSackRegisterTests ();
 #endif /* UNITTESTS */
 }
-

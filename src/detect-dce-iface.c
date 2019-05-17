@@ -47,25 +47,18 @@
 #include "util-unittest-helper.h"
 #include "stream-tcp.h"
 
-#ifdef HAVE_RUST
 #include "rust.h"
 #include "rust-smb-detect-gen.h"
-#endif
 
 #define PARSE_REGEX "^\\s*([0-9a-zA-Z]{8}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{4}-[0-9a-zA-Z]{12})(?:\\s*,(<|>|=|!)([0-9]{1,5}))?(?:\\s*,(any_frag))?\\s*$"
 
 static pcre *parse_regex = NULL;
 static pcre_extra *parse_regex_study = NULL;
 
-static int DetectDceIfaceMatch(ThreadVars *, DetectEngineThreadCtx *,
-        Flow *, uint8_t, void *, void *,
-        const Signature *, const SigMatchCtx *);
-#ifdef HAVE_RUST
 static int DetectDceIfaceMatchRust(ThreadVars *t,
         DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
         const Signature *s, const SigMatchCtx *m);
-#endif
 static int DetectDceIfaceSetup(DetectEngineCtx *, Signature *, const char *);
 static void DetectDceIfaceFree(void *);
 static void DetectDceIfaceRegisterTests(void);
@@ -82,13 +75,9 @@ static int InspectDceGeneric(ThreadVars *tv,
  */
 void DetectDceIfaceRegister(void)
 {
-    sigmatch_table[DETECT_DCE_IFACE].name = "dce_iface";
-    sigmatch_table[DETECT_DCE_IFACE].Match = NULL;
-#ifdef HAVE_RUST
+    sigmatch_table[DETECT_DCE_IFACE].name = "dcerpc.iface";
+    sigmatch_table[DETECT_DCE_IFACE].alias = "dce_iface";
     sigmatch_table[DETECT_DCE_IFACE].AppLayerTxMatch = DetectDceIfaceMatchRust;
-#else
-    sigmatch_table[DETECT_DCE_IFACE].AppLayerTxMatch = DetectDceIfaceMatch;
-#endif
     sigmatch_table[DETECT_DCE_IFACE].Setup = DetectDceIfaceSetup;
     sigmatch_table[DETECT_DCE_IFACE].Free  = DetectDceIfaceFree;
     sigmatch_table[DETECT_DCE_IFACE].RegisterTests = DetectDceIfaceRegisterTests;
@@ -246,28 +235,6 @@ static DetectDceIfaceData *DetectDceIfaceArgParse(const char *arg)
     return NULL;
 }
 
-#include "app-layer-smb.h"
-DCERPCState *DetectDceGetState(AppProto alproto, void *alstate)
-{
-#ifdef HAVE_RUST
-    return alstate;
-#else
-    switch (alproto) {
-        case ALPROTO_DCERPC:
-            return alstate;
-        case ALPROTO_SMB: {
-            SMBState *smb_state = (SMBState *)alstate;
-            return &smb_state->ds;
-        }
-        case ALPROTO_SMB2:
-            // not implemented
-            return NULL;
-    }
-
-    return NULL;
-#endif
-}
-
 /**
  * \internal
  * \brief Internal function that compares the dce interface version for this
@@ -319,7 +286,7 @@ static int DetectDceIfaceMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
     const DetectDceIfaceData *dce_data = (DetectDceIfaceData *)m;
 
     DCERPCUuidEntry *item = NULL;
-    const DCERPCState *dcerpc_state = DetectDceGetState(f->alproto, f->alstate);
+    const DCERPCState *dcerpc_state = state;
     if (dcerpc_state == NULL) {
         SCLogDebug("No DCERPCState for the flow");
         SCReturnInt(0);
@@ -373,7 +340,6 @@ end:
     SCReturnInt(ret);
 }
 
-#ifdef HAVE_RUST
 static int DetectDceIfaceMatchRust(ThreadVars *t,
         DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, void *state, void *txv,
@@ -398,7 +364,6 @@ static int DetectDceIfaceMatchRust(ThreadVars *t,
     }
     SCReturnInt(ret);
 }
-#endif
 
 /**
  * \brief Creates a SigMatch for the "dce_iface" keyword being sent as argument,

@@ -144,6 +144,12 @@ SCEnumCharMap http_decoder_event_table[ ] = {
         HTTP_DECODER_EVENT_URI_HOST_INVALID},
     { "REQUEST_HEADER_HOST_INVALID",
         HTTP_DECODER_EVENT_HEADER_HOST_INVALID},
+    { "REQUEST_AUTH_UNRECOGNIZED",
+        HTTP_DECODER_EVENT_AUTH_UNRECOGNIZED},
+    { "REQUEST_HEADER_REPETITION",
+        HTTP_DECODER_EVENT_REQUEST_HEADER_REPETITION},
+    { "RESPONSE_HEADER_REPETITION",
+        HTTP_DECODER_EVENT_RESPONSE_HEADER_REPETITION},
     { "URI_DELIM_NON_COMPLIANT",
         HTTP_DECODER_EVENT_URI_DELIM_NON_COMPLIANT},
     { "METHOD_DELIM_NON_COMPLIANT",
@@ -511,6 +517,8 @@ struct {
     { "C-E gzip has abnormal value", HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER},
     { "C-E deflate has abnormal value", HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER},
     { "C-E unknown setting", HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER},
+    { "Excessive request header repetitions", HTTP_DECODER_EVENT_REQUEST_HEADER_REPETITION},
+    { "Excessive response header repetitions", HTTP_DECODER_EVENT_RESPONSE_HEADER_REPETITION},
 };
 
 #define HTP_ERROR_MAX (sizeof(htp_errors) / sizeof(htp_errors[0]))
@@ -640,6 +648,13 @@ static inline void HTPErrorCheckTxRequestFlags(HtpState *s, htp_tx_t *tx)
         if (tx->flags & HTP_HOSTH_INVALID)
             HTPSetEvent(s, htud,
                     HTTP_DECODER_EVENT_HEADER_HOST_INVALID);
+    }
+    if (tx->request_auth_type == HTP_AUTH_UNRECOGNIZED) {
+        HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
+        if (htud == NULL)
+            return;
+
+        HTPSetEvent(s, htud, HTTP_DECODER_EVENT_AUTH_UNRECOGNIZED);
     }
 }
 
@@ -1633,6 +1648,11 @@ static int HtpResponseBodyHandle(HtpState *hstate, HtpTxUserData *htud,
                 htud->tcflags |= HTP_FILENAME_SET;
                 htud->tcflags &= ~HTP_DONTSTORE;
             }
+            //set range if present
+            htp_header_t *h_content_range = htp_table_get_c(tx->response_headers, "content-range");
+            if (h_content_range != NULL) {
+                HTPFileSetRange(hstate, h_content_range->value);
+            }
         }
     }
     else
@@ -2250,7 +2270,6 @@ static void HTPConfigSetDefaultsPhase1(HTPCfgRec *cfg_prec)
     htp_config_register_response_complete(cfg_prec->cfg, HTPCallbackResponse);
 
     htp_config_set_parse_request_cookies(cfg_prec->cfg, 0);
-    htp_config_set_parse_request_auth(cfg_prec->cfg, 0);
 
     /* don't convert + to space by default */
     htp_config_set_plusspace_decode(cfg_prec->cfg, HTP_DECODER_URLENCODED, 0);

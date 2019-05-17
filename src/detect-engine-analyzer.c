@@ -875,6 +875,7 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
     uint32_t http_raw_header_buf = 0;
     uint32_t http_raw_uri_buf = 0;
     uint32_t http_ua_buf = 0;
+    uint32_t http_host_buf = 0;
     uint32_t warn_pcre_no_content = 0;
     uint32_t warn_pcre_http_content = 0;
     uint32_t warn_pcre_http = 0;
@@ -905,6 +906,7 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
     const int httprawheader_id = DetectBufferTypeGetByName("http_raw_header");
     const int httpclientbody_id = DetectBufferTypeGetByName("http_client_body");
     const int httprawuri_id = DetectBufferTypeGetByName("http_raw_uri");
+    const int httphost_id = DetectBufferTypeGetByName("http_host");
 
     if (s->init_data->init_flags & SIG_FLAG_INIT_BIDIREC) {
         rule_bidirectional = 1;
@@ -983,6 +985,11 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
                     norm_http_buf += 1;
                     http_ua_buf += 1;
                 }
+                else if (list_id == httphost_id) {
+                    rule_pcre_http += 1;
+                    norm_http_buf += 1;
+                    http_host_buf += 1;
+                }
                 else {
                     rule_pcre += 1;
                 }
@@ -1044,6 +1051,11 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
                     raw_http_buf += 1;
                     http_method_buf += 1;
                 }
+                else if (list_id == httphost_id) {
+                    rule_content_http += 1;
+                    raw_http_buf += 1;
+                    http_host_buf += 1;
+                }
                 else if (list_id == DETECT_SM_LIST_PMATCH) {
                     rule_content += 1;
                     DetectContentData *cd = (DetectContentData *)sm->ctx;
@@ -1051,6 +1063,8 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
                         (DETECT_CONTENT_OFFSET | DETECT_CONTENT_DEPTH)) {
                         rule_content_offset_depth++;
                     }
+                } else {
+                    rule_content += 1;
                 }
             }
             else if (sm->type == DETECT_FLOW) {
@@ -1191,6 +1205,7 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
         if (http_stat_msg_buf) fprintf(rule_engine_analysis_FD, "    Rule matches on http stat msg buffer.\n");
         if (http_stat_code_buf) fprintf(rule_engine_analysis_FD, "    Rule matches on http stat code buffer.\n");
         if (http_ua_buf) fprintf(rule_engine_analysis_FD, "    Rule matches on http user agent buffer.\n");
+        if (http_host_buf) fprintf(rule_engine_analysis_FD, "    Rule matches on http host buffer.\n");
         if (s->alproto != ALPROTO_UNKNOWN) {
             fprintf(rule_engine_analysis_FD, "    App layer protocol is %s.\n", AppProtoToString(s->alproto));
         }
@@ -1233,7 +1248,7 @@ void EngineAnalysisRules(const DetectEngineCtx *de_ctx,
         if (warn_encoding_norm_http_buf) {
             fprintf(rule_engine_analysis_FD, "    Warning: Rule may contain percent encoded content for a normalized http buffer match.\n");
         }
-        if (warn_tcp_no_flow /*rule_flow == 0 && rule_flow == 0
+        if (warn_tcp_no_flow /*rule_flow == 0 && rule_flags == 0
                 && !(s->proto.flags & DETECT_PROTO_ANY) && DetectProtoContainsProto(&s->proto, IPPROTO_TCP)*/) {
             fprintf(rule_engine_analysis_FD, "    Warning: TCP rule without a flow or flags option.\n"
                                              "             -Consider adding flow or flags to improve performance of this rule.\n");

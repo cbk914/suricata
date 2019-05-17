@@ -133,8 +133,7 @@ enum {
     ADDRESS_GT,      /**< bigger               [bbb] [aaa] */
 };
 
-#define ADDRESS_FLAG_ANY            0x01 /**< address is "any" */
-#define ADDRESS_FLAG_NOT            0x02 /**< address is negated */
+#define ADDRESS_FLAG_NOT            0x01 /**< address is negated */
 
 /** \brief address structure for use in the detection engine.
  *
@@ -156,7 +155,6 @@ typedef struct DetectAddress_ {
 
 /** Signature grouping head. Here 'any', ipv4 and ipv6 are split out */
 typedef struct DetectAddressHead_ {
-    DetectAddress *any_head;
     DetectAddress *ipv4_head;
     DetectAddress *ipv6_head;
 } DetectAddressHead;
@@ -346,16 +344,17 @@ struct DetectEngineThreadCtx_;// DetectEngineThreadCtx;
  * Prefilter and inspection will only deal with 'inspect'. */
 
 typedef struct InspectionBuffer {
-    const uint8_t *inspect;     /**< active pointer, points either to ::buf or ::orig */
-    uint32_t inspect_len; /**< size of active data. See to ::len or ::orig_len */
+    const uint8_t *inspect; /**< active pointer, points either to ::buf or ::orig */
     uint64_t inspect_offset;
+    uint32_t inspect_len;   /**< size of active data. See to ::len or ::orig_len */
+    uint8_t flags;          /**< DETECT_CI_FLAGS_* for use with DetectEngineContentInspection */
 
+    uint32_t len;           /**< how much is in use */
     uint8_t *buf;
-    uint32_t len;   /**< how much is in use */
-    uint32_t size;  /**< size of the memory allocation */
+    uint32_t size;          /**< size of the memory allocation */
 
-    const uint8_t *orig;
     uint32_t orig_len;
+    const uint8_t *orig;
 } InspectionBuffer;
 
 /* inspection buffers are kept per tx (in det_ctx), but some protocols
@@ -451,6 +450,11 @@ typedef struct SignatureInitData_ {
     /** option was prefixed with '!'. Only set for sigmatches that
      *  have the SIGMATCH_HANDLE_NEGATION flag set. */
     bool negated;
+
+    /* track if we saw any negation in the addresses. If so, we
+     * skip it for ip-only */
+    bool src_contains_negation;
+    bool dst_contains_negation;
 
     /* used to hold flags that are used during init */
     uint32_t init_flags;
@@ -995,11 +999,6 @@ typedef struct DetectEngineThreadCtx_ {
     /* counter for the filestore array below -- up here for cache reasons. */
     uint16_t filestore_cnt;
 
-    HttpReassembledBody *hcbd;
-    uint64_t hcbd_start_tx_id;
-    uint16_t hcbd_buffers_size;
-    uint16_t hcbd_buffers_list_len;
-
     /** id for alert counter */
     uint16_t counter_alerts;
 #ifdef PROFILING
@@ -1156,8 +1155,11 @@ typedef struct SigTableElmt_ {
     void (*Free)(void *);
     void (*RegisterTests)(void);
 
-    uint8_t flags;
+    uint16_t flags;
     /* coccinelle: SigTableElmt:flags:SIGMATCH_ */
+
+    /** better keyword to replace the current one */
+    uint16_t alternative;
 
     const char *name;     /**< keyword name alias */
     const char *alias;    /**< name alias */
@@ -1327,27 +1329,33 @@ typedef struct SigGroupHead_ {
 } SigGroupHead;
 
 /** sigmatch has no options, so the parser shouldn't expect any */
-#define SIGMATCH_NOOPT          (1 << 0)
+#define SIGMATCH_NOOPT                  BIT_U16(0)
 /** sigmatch is compatible with a ip only rule */
-#define SIGMATCH_IPONLY_COMPAT  (1 << 1)
+#define SIGMATCH_IPONLY_COMPAT          BIT_U16(1)
 /** sigmatch is compatible with a decode event only rule */
-#define SIGMATCH_DEONLY_COMPAT  (1 << 2)
+#define SIGMATCH_DEONLY_COMPAT          BIT_U16(2)
 /**< Flag to indicate that the signature is not built-in */
-#define SIGMATCH_NOT_BUILT      (1 << 3)
+#define SIGMATCH_NOT_BUILT              BIT_U16(3)
 /** sigmatch may have options, so the parser should be ready to
  *  deal with both cases */
-#define SIGMATCH_OPTIONAL_OPT       (1 << 4)
+#define SIGMATCH_OPTIONAL_OPT           BIT_U16(4)
 /** input may be wrapped in double quotes. They will be stripped before
  *  input data is passed to keyword parser */
-#define SIGMATCH_QUOTES_OPTIONAL    (1 << 5)
+#define SIGMATCH_QUOTES_OPTIONAL        BIT_U16(5)
 /** input MUST be wrapped in double quotes. They will be stripped before
  *  input data is passed to keyword parser. Missing double quotes lead to
  *  error and signature invalidation. */
-#define SIGMATCH_QUOTES_MANDATORY   (1 << 6)
+#define SIGMATCH_QUOTES_MANDATORY       BIT_U16(6)
 /** negation parsing is handled by the rule parser. Signature::init_data::negated
  *  will be set to true or false prior to calling the keyword parser. Exclamation
  *  mark is stripped from the input to the keyword parser. */
-#define SIGMATCH_HANDLE_NEGATION    (1 << 7)
+#define SIGMATCH_HANDLE_NEGATION        BIT_U16(7)
+/** keyword is a content modifier */
+#define SIGMATCH_INFO_CONTENT_MODIFIER  BIT_U16(8)
+/** keyword is a sticky buffer */
+#define SIGMATCH_INFO_STICKY_BUFFER     BIT_U16(9)
+/** keyword is deprecated: used to suggest an alternative */
+#define SIGMATCH_INFO_DEPRECATED        BIT_U16(10)
 
 enum DetectEngineTenantSelectors
 {

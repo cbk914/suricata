@@ -16,7 +16,7 @@
  */
 
 use std;
-use core::{self, ALPROTO_UNKNOWN, AppProto, Flow};
+use core::{self, ALPROTO_UNKNOWN, AppProto, Flow, IPPROTO_TCP};
 use libc;
 use log::*;
 use std::mem::transmute;
@@ -143,7 +143,7 @@ impl TemplateState {
 
         while current.len() > 0 {
             match parser::parse_message(current) {
-                nom::IResult::Done(rem, request) => {
+                Ok((rem, request)) => {
                     current = rem;
 
                     SCLogNotice!("Request: {}", request);
@@ -151,11 +151,11 @@ impl TemplateState {
                     tx.request = Some(request);
                     self.transactions.push(tx);
                 }
-                nom::IResult::Incomplete(_) => {
+                Err(nom::Err::Incomplete(_)) => {
                     self.request_buffer.extend_from_slice(current);
                     break;
                 }
-                nom::IResult::Error(_) => {
+                Err(_) => {
                     return false;
                 }
             }
@@ -181,7 +181,7 @@ impl TemplateState {
 
         while current.len() > 0 {
             match parser::parse_message(current) {
-                nom::IResult::Done(rem, response) => {
+                Ok((rem, response)) => {
                     current = rem;
 
                     match self.find_request() {
@@ -194,11 +194,11 @@ impl TemplateState {
                         None => {}
                     }
                 }
-                nom::IResult::Incomplete(_) => {
+                Err(nom::Err::Incomplete(_)) => {
                     self.response_buffer.extend_from_slice(current);
                     break;
                 }
-                nom::IResult::Error(_) => {
+                Err(_) => {
                     return false;
                 }
             }
@@ -257,8 +257,10 @@ export_tx_set_detect_state!(
 #[no_mangle]
 pub extern "C" fn rs_template_probing_parser(
     _flow: *const Flow,
+    _direction: u8,
     input: *const libc::uint8_t,
     input_len: u32,
+    _rdir: *mut u8
 ) -> AppProto {
     // Need at least 2 bytes.
     if input_len > 1 && input != std::ptr::null_mut() {
@@ -513,7 +515,7 @@ pub unsafe extern "C" fn rs_template_register_parser() {
     let parser = RustParser {
         name: PARSER_NAME.as_ptr() as *const libc::c_char,
         default_port: default_port.as_ptr(),
-        ipproto: libc::IPPROTO_TCP,
+        ipproto: IPPROTO_TCP,
         probe_ts: rs_template_probing_parser,
         probe_tc: rs_template_probing_parser,
         min_depth: 0,

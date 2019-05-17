@@ -398,6 +398,29 @@ void JsonAddCommonOptions(const OutputJsonCommonSettings *cfg,
     }
 }
 
+/**
+ * \brief Jsonify a packet
+ *
+ * \param p Packet
+ * \param js JSON object
+ * \param max_length If non-zero, restricts the number of packet data bytes handled.
+ */
+void JsonPacket(const Packet *p, json_t *js, unsigned long max_length)
+{
+    unsigned long max_len = max_length == 0 ? GET_PKT_LEN(p) : max_length;
+    unsigned long len = 2 * max_len;
+    uint8_t encoded_packet[len];
+    Base64Encode((unsigned char*) GET_PKT_DATA(p), max_len, encoded_packet, &len);
+    json_object_set_new(js, "packet", json_string((char *)encoded_packet));
+
+    /* Create packet info. */
+    json_t *packetinfo_js = json_object();
+    if (unlikely(packetinfo_js == NULL)) {
+        return;
+    }
+    json_object_set_new(packetinfo_js, "linktype", json_integer(p->datalink));
+    json_object_set_new(js, "packet_info", packetinfo_js);
+}
 /** \brief jsonify tcp flags field
  *  Only add 'true' fields in an attempt to keep things reasonably compact.
  */
@@ -430,7 +453,7 @@ void JsonTcpFlags(uint8_t flags, json_t *js)
  */
 void JsonFiveTuple(const Packet *p, enum OutputJsonLogDirection dir, json_t *js)
 {
-    char srcip[46] = "", dstip[46] = "";
+    char srcip[46] = {0}, dstip[46] = {0};
     Port sp, dp;
     char proto[16];
 
@@ -446,6 +469,9 @@ void JsonFiveTuple(const Packet *p, enum OutputJsonLogDirection dir, json_t *js)
                         srcip, sizeof(srcip));
                 PrintInet(AF_INET6, (const void *)GET_IPV6_DST_ADDR(p),
                         dstip, sizeof(dstip));
+            } else {
+                /* Not an IP packet so don't do anything */
+                return;
             }
             sp = p->sp;
             dp = p->dp;
@@ -717,25 +743,13 @@ json_t *CreateJSONHeader(const Packet *p, enum OutputJsonLogDirection dir,
 
     /* vlan */
     if (p->vlan_idx > 0) {
-        json_t *js_vlan;
-        switch (p->vlan_idx) {
-            case 1:
-                json_object_set_new(js, "vlan",
-                                    json_integer(VLAN_GET_ID1(p)));
-                break;
-            case 2:
-                js_vlan = json_array();
-                if (unlikely(js != NULL)) {
-                    json_array_append_new(js_vlan,
-                                    json_integer(VLAN_GET_ID1(p)));
-                    json_array_append_new(js_vlan,
-                                    json_integer(VLAN_GET_ID2(p)));
-                    json_object_set_new(js, "vlan", js_vlan);
-                }
-                break;
-            default:
-                /* shouldn't get here */
-                break;
+        json_t *js_vlan = json_array();
+        if (js_vlan) {
+            json_array_append_new(js_vlan, json_integer(p->vlan_id[0]));
+            if (p->vlan_idx > 1) {
+                json_array_append_new(js_vlan, json_integer(p->vlan_id[1]));
+            }
+            json_object_set_new(js, "vlan", js_vlan);
         }
     }
 

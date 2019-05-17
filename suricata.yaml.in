@@ -62,6 +62,9 @@ stats:
   interval: 8
   # Add decode events as stats.
   #decoder-events: true
+  # Decoder event prefix in stats. Has been 'decoder' before, but that leads
+  # to missing events in the eve.stats records. See issue #2225.
+  decoder-events-prefix: "decoder.event"
   # Add stream events as stats.
   #stream-events: false
 
@@ -151,11 +154,22 @@ outputs:
             # Enable the logging of tagged packets for rules using the
             # "tag" keyword.
             tagged-packets: yes
+        #- anomaly:
+            # Anomaly log records describe unexpected conditions such as truncated packets, packets with invalid
+            # IP/UDP/TCP length values, and other events that render the packet invalid for further processing 
+            # or describe unexpected behavior on an established stream. Networks which experience high
+            # occurrences of anomalies may experience packet processing degradation.
+
+            # Enable dumping of packet header
+            # packethdr: no            # enable dumping of packet header
         - http:
             extended: yes     # enable this for extended logging information
             # custom allows additional http fields to be included in eve-log
             # the example below adds three additional fields when uncommented
             #custom: [Accept-Encoding, Accept-Language, Authorization]
+            # set this value to one among {both, request, response} to dump all
+            # http headers for every http request and/or response
+            # dump-all-headers: [both, request, response]
         - dns:
             # This configuration uses the new DNS logging format,
             # the old configuration is still available:
@@ -217,14 +231,13 @@ outputs:
             #md5: [body, subject]
 
         #- dnp3
-        @rust_config_comment@- nfs
-        @rust_config_comment@- smb
-        @rust_config_comment@- tftp
-        @rust_config_comment@- ikev2
-        @rust_config_comment@- krb5
+        - nfs
+        - smb
+        - tftp
+        - ikev2
+        - krb5
         - dhcp:
-            # DHCP logging requires Rust.
-            enabled: @rust_config_enabled@
+            enabled: yes
             # When extended mode is on, all DHCP messages are logged
             # with full detail. When extended mode is off (the
             # default), just enough information to map a MAC address
@@ -526,18 +539,6 @@ outputs:
       #max-open-files: 1000
       include-pid: no # set to yes to include pid in file names
 
-  # output module to log files tracked in a easily parsable JSON format
-  - file-log:
-      enabled: no
-      filename: files-json.log
-      append: yes
-      #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
-
-      force-magic: no   # force logging magic on all logged files
-      # force logging of checksums, available hash functions are md5,
-      # sha1 and sha256
-      #force-hash: [md5]
-
   # Log TCP data after stream normalization
   # 2 types: file or dir. File logs into a single logfile. Dir creates
   # 2 files per TCP session and stores the raw TCP data into them.
@@ -602,7 +603,7 @@ logging:
   - file:
       enabled: yes
       level: info
-      filename: @e_logdir@suricata.log
+      filename: suricata.log
       # type: json
   - syslog:
       enabled: no
@@ -767,7 +768,7 @@ pcap-file:
 app-layer:
   protocols:
     krb5:
-      enabled: @rust_config_enabled@
+      enabled: yes
     ikev2:
       enabled: yes
     tls:
@@ -790,7 +791,7 @@ app-layer:
       #
       # For best performance, select 'bypass'.
       #
-      #encrypt-handling: default
+      #encryption-handling: default
 
     dcerpc:
       enabled: yes
@@ -801,6 +802,7 @@ app-layer:
       enabled: yes
     smtp:
       enabled: yes
+      raw-extraction: no
       # Configure SMTP-MIME Decoder
       mime:
         # Decode MIME messages from SMTP transactions
@@ -831,8 +833,6 @@ app-layer:
       enabled: detection-only
     msn:
       enabled: detection-only
-    # Note: --enable-rust is required for full SMB1/2 support. W/o rust
-    # only minimal SMB1 support is available.
     smb:
       enabled: yes
       detection-ports:
@@ -841,12 +841,10 @@ app-layer:
       # Stream reassembly size for SMB streams. By default track it completely.
       #stream-depth: 0
 
-    # Note: NFS parser depends on Rust support: pass --enable-rust
-    # to configure.
     nfs:
-      enabled: @rust_config_enabled@
+      enabled: yes
     tftp:
-      enabled: @rust_config_enabled@
+      enabled: yes
     dns:
       # memcaps. Globally and per flow/state.
       #global-memcap: 16mb
@@ -1017,12 +1015,11 @@ app-layer:
         dp: 44818
         sp: 44818
 
-    # Note: parser depends on Rust support
     ntp:
-      enabled: @rust_config_enabled@
+      enabled: yes
 
     dhcp:
-      enabled: @rust_config_enabled@
+      enabled: yes
 
 # Limit for the maximum number of asn1 frames to decode (default 256)
 asn1-max-frames: 256
@@ -1673,7 +1670,7 @@ capture:
 
 # Netmap support
 #
-# Netmap operates with NIC directly in driver, so you need FreeBSD which have
+# Netmap operates with NIC directly in driver, so you need FreeBSD 11+ which have
 # built-in netmap support or compile and install netmap module and appropriate
 # NIC driver on your Linux system.
 # To reach maximum throughput disable all receive-, segmentation-,
@@ -1685,7 +1682,9 @@ capture:
 netmap:
    # To specify OS endpoint add plus sign at the end (e.g. "eth0+")
  - interface: eth2
-   # Number of receive threads. "auto" uses number of RSS queues on interface.
+   # Number of capture threads. "auto" uses number of RSS queues on interface.
+   # Warning: unless the RSS hashing is symmetrical, this will lead to
+   # accuracy issues.
    #threads: auto
    # You can use the following variables to activate netmap tap or IPS mode.
    # If copy-mode is set to ips or tap, the traffic coming to the current
@@ -1798,46 +1797,63 @@ napatech:
     # (-1 = OFF, 1 - 100 = percentage of the host buffer that can be held back)
     # This may be enabled when sharing streams with another application.
     # Otherwise, it should be turned off.
-    hba: -1
+    #hba: -1
 
-    # use_all_streams set to "yes" will query the Napatech service for all configured
-    # streams and listen on all of them. When set to "no" the streams config array
-    # will be used.
-    use-all-streams: yes
+    # When use_all_streams is set to "yes" the initialization code will query
+    # the Napatech service for all configured streams and listen on all of them.
+    # When set to "no" the streams config array will be used.
+    #
+    # This option necessitates running the appropriate NTPL commands to create
+    # the desired streams prior to running suricata.
+    #use-all-streams: no
 
-    # The streams to listen on.  This can be either:
-    #   a list of individual streams (e.g. streams: [0,1,2,3])
+    # The streams to listen on when auto-config is disabled or when and threading
+    # cpu-affinity is disabled.  This can be either:
+    #   an individual stream (e.g. streams: [0])
     # or
     #   a range of streams (e.g. streams: ["0-3"])
+    #
     streams: ["0-3"]
 
-# Tilera mpipe configuration. for use on Tilera TILE-Gx.
-mpipe:
+    # When auto-config is enabled the streams will be created and assigned
+    # automatically to the NUMA node where the thread resides.  If cpu-affinity
+    # is enabled in the threading section.  Then the streams will be created
+    # according to the number of worker threads specified in the worker cpu set.
+    # Otherwise, the streams array is used to define the streams.
+    #
+    # This option cannot be used simultaneous with "use-all-streams".
+    #
+    auto-config: yes
 
-  # Load balancing modes: "static", "dynamic", "sticky", or "round-robin".
-  load-balance: dynamic
+    # Ports indicates which napatech ports are to be used in auto-config mode.
+    # these are the port ID's of the ports that will be merged prior to the
+    # traffic being distributed to the streams.
+    #
+    # This can be specified in any of the following ways:
+    #
+    #   a list of individual ports (e.g. ports: [0,1,2,3])
+    #
+    #   a range of ports (e.g. ports: [0-3])
+    #
+    #   "all" to indicate that all ports are to be merged together
+    #   (e.g. ports: [all])
+    #
+    # This has no effect if auto-config is disabled.
+    #
+    ports: [all]
 
-  # Number of Packets in each ingress packet queue. Must be 128, 512, 2028 or 65536
-  iqueue-packets: 2048
-
-  # List of interfaces we will listen on.
-  inputs:
-  - interface: xgbe2
-  - interface: xgbe3
-  - interface: xgbe4
-
-
-  # Relative weight of memory for packets of each mPipe buffer size.
-  stack:
-    size128: 0
-    size256: 9
-    size512: 0
-    size1024: 0
-    size1664: 7
-    size4096: 0
-    size10386: 0
-    size16384: 0
-
+    # When auto-config is enabled the hashmode specifies the algorithm for
+    # determining to which stream a given packet is to be delivered.
+    # This can be any valid Napatech NTPL hashmode command.
+    #
+    # The most common hashmode commands are:  hash2tuple, hash2tuplesorted,
+    # hash5tuple, hash5tuplesorted and roundrobin.
+    #
+    # See Napatech NTPL documentation other hashmodes and details on their use.
+    #
+    # This has no effect if auto-config is disabled.
+    #
+    hashmode: hash5tuplesorted
 ##
 ## Configure Suricata to load Suricata-Update managed rules.
 ##

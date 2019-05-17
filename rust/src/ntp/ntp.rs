@@ -29,7 +29,7 @@ use std::ffi::{CStr,CString};
 
 use log::*;
 
-use nom::IResult;
+use nom;
 
 #[repr(u32)]
 pub enum NTPEvent {
@@ -87,7 +87,7 @@ impl NTPState {
     /// Returns The number of messages parsed, or -1 on error
     fn parse(&mut self, i: &[u8], _direction: u8) -> i32 {
         match parse_ntp(i) {
-            IResult::Done(_,ref msg) => {
+            Ok((_,ref msg)) => {
                 // SCLogDebug!("parse_ntp: {:?}",msg);
                 if msg.mode == NtpMode::SymmetricActive || msg.mode == NtpMode::Client {
                     let mut tx = self.new_tx();
@@ -97,12 +97,12 @@ impl NTPState {
                 }
                 1
             },
-            IResult::Incomplete(_) => {
+            Err(nom::Err::Incomplete(_)) => {
                 SCLogDebug!("Insufficient data while parsing NTP data");
                 self.set_event(NTPEvent::MalformedData);
                 -1
             },
-            IResult::Error(_) => {
+            Err(_) => {
                 SCLogDebug!("Error while parsing NTP data");
                 self.set_event(NTPEvent::MalformedData);
                 -1
@@ -343,21 +343,25 @@ pub extern "C" fn rs_ntp_state_get_event_info(event_name: *const libc::c_char,
 static mut ALPROTO_NTP : AppProto = ALPROTO_UNKNOWN;
 
 #[no_mangle]
-pub extern "C" fn ntp_probing_parser(_flow: *const Flow, input:*const u8, input_len: u32) -> AppProto {
+pub extern "C" fn ntp_probing_parser(_flow: *const Flow,
+        _direction: u8,
+        input:*const u8, input_len: u32,
+        _rdir: *mut u8) -> AppProto
+{
     let slice: &[u8] = unsafe { std::slice::from_raw_parts(input as *mut u8, input_len as usize) };
     let alproto = unsafe{ ALPROTO_NTP };
     match parse_ntp(slice) {
-        IResult::Done(_, ref msg) => {
+        Ok((_, ref msg)) => {
             if msg.version == 3 || msg.version == 4 {
                 return alproto;
             } else {
                 return unsafe{ALPROTO_FAILED};
             }
         },
-        IResult::Incomplete(_) => {
+        Err(nom::Err::Incomplete(_)) => {
             return ALPROTO_UNKNOWN;
         },
-        IResult::Error(_) => {
+        Err(_) => {
             return unsafe{ALPROTO_FAILED};
         },
     }
@@ -371,7 +375,7 @@ pub unsafe extern "C" fn rs_register_ntp_parser() {
     let parser = RustParser {
         name              : PARSER_NAME.as_ptr() as *const libc::c_char,
         default_port      : default_port.as_ptr(),
-        ipproto           : libc::IPPROTO_UDP,
+        ipproto           : core::IPPROTO_UDP,
         probe_ts          : ntp_probing_parser,
         probe_tc          : ntp_probing_parser,
         min_depth         : 0,

@@ -27,6 +27,7 @@
 #include "decode.h"
 #include "util-var.h"
 #include "util-atomic.h"
+#include "util-device.h"
 #include "detect-tag.h"
 #include "util-optimize.h"
 
@@ -101,6 +102,8 @@ typedef struct AppLayerParserState_ AppLayerParserState;
 #define FLOW_CHANGE_PROTO               BIT_U32(24)
 
 #define FLOW_WRONG_THREAD               BIT_U32(25)
+/** Protocol detection told us flow is picked up in wrong direction (midstream) */
+#define FLOW_DIR_REVERSED               BIT_U32(26)
 
 /* File flags */
 
@@ -132,6 +135,11 @@ typedef struct AppLayerParserState_ AppLayerParserState;
     (((f)->flags & FLOW_IPV4) == FLOW_IPV4)
 #define FLOW_IS_IPV6(f) \
     (((f)->flags & FLOW_IPV6) == FLOW_IPV6)
+
+#define FLOW_GET_SP(f)  \
+    ((f)->flags & FLOW_DIR_REVERSED) ? (f)->dp : (f)->sp;
+#define FLOW_GET_DP(f)  \
+    ((f)->flags & FLOW_DIR_REVERSED) ? (f)->sp : (f)->dp;
 
 #define FLOW_COPY_IPV4_ADDR_TO_PACKET(fa, pa) do {      \
         (pa)->family = AF_INET;                         \
@@ -289,19 +297,9 @@ typedef struct FlowAddress_ {
 #define addr_data16 address.address_un_data16
 #define addr_data8  address.address_un_data8
 
-#ifdef __tile__
-/* Atomic Ints performance better on Tile. */
-typedef unsigned int FlowRefCount;
-#else
 typedef unsigned short FlowRefCount;
-#endif
 
-#ifdef __tile__
-/* Atomic Ints performance better on Tile. */
-typedef unsigned int FlowStateType;
-#else
 typedef unsigned short FlowStateType;
-#endif
 
 /** Local Thread ID */
 typedef uint16_t FlowThreadId;
@@ -346,6 +344,10 @@ typedef struct Flow_
     uint8_t proto;
     uint8_t recursion_level;
     uint16_t vlan_id[2];
+    uint8_t vlan_idx;
+
+    /** Incoming interface */
+    const struct LiveDevice_ *livedev;
 
     /** flow hash - the flow hash before hash table size mod. */
     uint32_t flow_hash;
@@ -495,6 +497,7 @@ int FlowHasAlerts(const Flow *);
 void FlowSetChangeProtoFlag(Flow *);
 void FlowUnsetChangeProtoFlag(Flow *);
 int FlowChangeProto(Flow *);
+void FlowSwap(Flow *);
 
 void FlowRegisterTests (void);
 int FlowSetProtoTimeout(uint8_t ,uint32_t ,uint32_t ,uint32_t);
@@ -625,4 +628,3 @@ uint8_t FlowGetDisruptionFlags(const Flow *f, uint8_t flags);
 void FlowHandlePacketUpdate(Flow *f, Packet *p);
 
 #endif /* __FLOW_H__ */
-

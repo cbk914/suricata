@@ -49,13 +49,8 @@
 #include "detect-engine-state.h"
 #include "detect-engine-analyzer.h"
 
-#include "detect-engine-filedata.h"
-
-
 #include "detect-engine-payload.h"
 #include "detect-engine-event.h"
-#include "detect-engine-hcbd.h"
-#include "detect-engine-hsbd.h"
 
 #include "detect-filestore.h"
 #include "detect-flowvar.h"
@@ -169,13 +164,6 @@ static void DetectRunPostMatch(ThreadVars *tv,
             smd++;
         }
     }
-
-    DetectReplaceExecute(p, det_ctx);
-
-    if (s->flags & SIG_FLAG_FILESTORE)
-        DetectFilestorePostMatch(tv, det_ctx, p, s);
-
-    return;
 }
 
 /**
@@ -242,7 +230,6 @@ static inline void DetectPrefilterMergeSort(DetectEngineCtx *de_ctx,
                                             DetectEngineThreadCtx *det_ctx)
 {
     SigIntId mpm, nonmpm;
-    det_ctx->match_array_cnt = 0;
     SigIntId *mpm_ptr = det_ctx->pmq.rule_id_array;
     SigIntId *nonmpm_ptr = det_ctx->non_pf_id_array;
     uint32_t m_cnt = det_ctx->pmq.rule_id_array_cnt;
@@ -359,7 +346,7 @@ static inline void DetectPrefilterMergeSort(DetectEngineCtx *de_ctx,
 
     det_ctx->match_array_cnt = match_array - det_ctx->match_array;
 
-    BUG_ON((det_ctx->pmq.rule_id_array_cnt + det_ctx->non_pf_id_cnt) < det_ctx->match_array_cnt);
+    DEBUG_VALIDATE_BUG_ON((det_ctx->pmq.rule_id_array_cnt + det_ctx->non_pf_id_cnt) < det_ctx->match_array_cnt);
 }
 
 static inline void
@@ -685,21 +672,19 @@ static inline int DetectRunInspectRulePacketMatches(
         SigMatchData *smd = s->sm_arrays[DETECT_SM_LIST_MATCH];
 
         SCLogDebug("running match functions, sm %p", smd);
-        if (smd != NULL) {
-            while (1) {
-                KEYWORD_PROFILING_START;
-                if (sigmatch_table[smd->type].Match(tv, det_ctx, p, s, smd->ctx) <= 0) {
-                    KEYWORD_PROFILING_END(det_ctx, smd->type, 0);
-                    SCLogDebug("no match");
-                    return 0;
-                }
-                KEYWORD_PROFILING_END(det_ctx, smd->type, 1);
-                if (smd->is_last) {
-                    SCLogDebug("match and is_last");
-                    break;
-                }
-                smd++;
+        while (1) {
+            KEYWORD_PROFILING_START;
+            if (sigmatch_table[smd->type].Match(tv, det_ctx, p, s, smd->ctx) <= 0) {
+                KEYWORD_PROFILING_END(det_ctx, smd->type, 0);
+                SCLogDebug("no match");
+                return 0;
             }
+            KEYWORD_PROFILING_END(det_ctx, smd->type, 1);
+            if (smd->is_last) {
+                SCLogDebug("match and is_last");
+                break;
+            }
+            smd++;
         }
     }
     return 1;
@@ -827,8 +812,8 @@ static inline void DetectRulePacketRules(
         if (likely(sflags & SIG_FLAG_APPLAYER)) {
             if (s->alproto != ALPROTO_UNKNOWN && s->alproto != scratch->alproto) {
                 if (s->alproto == ALPROTO_DCERPC) {
-                    if (scratch->alproto != ALPROTO_SMB && scratch->alproto != ALPROTO_SMB2) {
-                        SCLogDebug("DCERPC sig, alproto not SMB or SMB2");
+                    if (scratch->alproto != ALPROTO_SMB) {
+                        SCLogDebug("DCERPC sig, alproto not SMB");
                         goto next;
                     }
                 } else {
@@ -927,6 +912,7 @@ static DetectRunScratchpad DetectRunSetup(
     det_ctx->filestore_cnt = 0;
     det_ctx->base64_decoded_len = 0;
     det_ctx->raw_stream_progress = 0;
+    det_ctx->match_array_cnt = 0;
 
 #ifdef DEBUG
     if (p->flags & PKT_STREAM_ADD) {
@@ -1039,11 +1025,11 @@ static void DetectRunCleanup(DetectEngineThreadCtx *det_ctx,
 
     if (pflow != NULL) {
         /* update inspected tracker for raw reassembly */
-        if (p->proto == IPPROTO_TCP && pflow->protoctx != NULL) {
+        if (p->proto == IPPROTO_TCP && pflow->protoctx != NULL &&
+            (p->flags & PKT_STREAM_EST))
+        {
             StreamReassembleRawUpdateProgress(pflow->protoctx, p,
                     det_ctx->raw_stream_progress);
-
-            DetectEngineCleanHCBDBuffers(det_ctx);
         }
     }
     PACKET_PROFILING_DETECT_END(p, PROF_DETECT_CLEANUP);
@@ -1245,7 +1231,7 @@ static bool DetectRunTxInspectRule(ThreadVars *tv,
             } else if (match == DETECT_ENGINE_INSPECT_SIG_CANT_MATCH) {
                 inspect_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
                 inspect_flags |= BIT_U32(engine->id);
-            } else if (match == DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILESTORE) {
+            } else if (match == DETECT_ENGINE_INSPECT_SIG_CANT_MATCH_FILES) {
                 inspect_flags |= DE_STATE_FLAG_SIG_CANT_MATCH;
                 inspect_flags |= BIT_U32(engine->id);
                 file_no_match = 1;

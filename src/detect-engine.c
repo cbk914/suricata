@@ -46,8 +46,6 @@
 #include "detect-engine-iponly.h"
 #include "detect-engine-tag.h"
 
-#include "detect-engine-uri.h"
-#include "detect-engine-hrhd.h"
 #include "detect-engine-file.h"
 
 #include "detect-engine.h"
@@ -1274,6 +1272,7 @@ int DetectEngineInspectBufferGeneric(
 
     uint8_t ci_flags = eof ? DETECT_CI_FLAGS_END : 0;
     ci_flags |= (offset == 0 ? DETECT_CI_FLAGS_START : 0);
+    ci_flags |= buffer->flags;
 
     det_ctx->discontinue_matching = 0;
     det_ctx->buffer_offset = 0;
@@ -1283,9 +1282,9 @@ int DetectEngineInspectBufferGeneric(
      * transaction at the app layer */
     int r = DetectEngineContentInspection(de_ctx, det_ctx,
                                           s, engine->smd,
-                                          f,
+                                          NULL, f,
                                           (uint8_t *)data, data_len, offset, ci_flags,
-                                          DETECT_ENGINE_CONTENT_INSPECTION_MODE_STATE, NULL);
+                                          DETECT_ENGINE_CONTENT_INSPECTION_MODE_STATE);
     if (r == 1) {
         return DETECT_ENGINE_INSPECT_SIG_MATCH;
     } else {
@@ -1824,7 +1823,7 @@ static int DetectEngineCtxLoadConf(DetectEngineCtx *de_ctx)
     if (sgh_mpm_context == NULL || strcmp(sgh_mpm_context, "auto") == 0) {
         /* for now, since we still haven't implemented any intelligence into
          * understanding the patterns and distributing mpm_ctx across sgh */
-        if (de_ctx->mpm_matcher == MPM_AC || de_ctx->mpm_matcher == MPM_AC_TILE ||
+        if (de_ctx->mpm_matcher == MPM_AC || de_ctx->mpm_matcher == MPM_AC_KS ||
 #ifdef BUILD_HYPERSCAN
             de_ctx->mpm_matcher == MPM_HS ||
 #endif
@@ -2546,12 +2545,6 @@ static void DetectEngineThreadCtxFree(DetectEngineThreadCtx *det_ctx)
     if (det_ctx->bj_values != NULL)
         SCFree(det_ctx->bj_values);
 
-    /* HSCB */
-    if (det_ctx->hcbd != NULL) {
-        SCLogDebug("det_ctx hcbd %u", det_ctx->hcbd_buffers_size);
-        SCFree(det_ctx->hcbd);
-    }
-
     /* Decoded base64 data. */
     if (det_ctx->base64_decoded != NULL) {
         SCFree(det_ctx->base64_decoded);
@@ -2626,7 +2619,7 @@ void DetectEngineThreadCtxInfo(ThreadVars *t, DetectEngineThreadCtx *det_ctx)
  *  \param de_ctx detection engine to register in
  *  \param name keyword name for error printing
  *  \param InitFunc function ptr
- *  \param data keyword init data to pass to Func
+ *  \param data keyword init data to pass to Func. Can be NULL.
  *  \param FreeFunc function ptr
  *  \param mode 0 normal (ctx per keyword instance) 1 shared (one ctx per det_ct)
  *
@@ -2639,7 +2632,7 @@ void DetectEngineThreadCtxInfo(ThreadVars *t, DetectEngineThreadCtx *det_ctx)
  */
 int DetectRegisterThreadCtxFuncs(DetectEngineCtx *de_ctx, const char *name, void *(*InitFunc)(void *), void *data, void (*FreeFunc)(void *), int mode)
 {
-    BUG_ON(de_ctx == NULL || InitFunc == NULL || FreeFunc == NULL || data == NULL);
+    BUG_ON(de_ctx == NULL || InitFunc == NULL || FreeFunc == NULL);
 
     if (mode) {
         DetectEngineThreadKeywordCtxItem *item = de_ctx->keyword_list;

@@ -30,8 +30,9 @@ use std::mem::transmute;
 use std::str;
 use std::ffi::CStr;
 
-use nom::IResult;
 use std::collections::HashMap;
+
+use nom;
 
 use core::*;
 use log::*;
@@ -1248,7 +1249,7 @@ impl SMBState {
             // lost so we give up.
             if input.len() > 8 {
                 match parse_nbss_record_partial(input) {
-                    IResult::Done(_, ref hdr) => {
+                    Ok((_, ref hdr)) => {
                         if !hdr.is_smb() {
                             SCLogDebug!("partial NBSS, not SMB and no known msg type {}", hdr.message_type);
                             self.trunc_ts();
@@ -1262,16 +1263,16 @@ impl SMBState {
         }
 
         match parse_nbss_record_partial(input) {
-            IResult::Done(output, ref nbss_part_hdr) => {
+            Ok((output, ref nbss_part_hdr)) => {
                 SCLogDebug!("parse_nbss_record_partial ok, output len {}", output.len());
                 if nbss_part_hdr.message_type == NBSS_MSGTYPE_SESSION_MESSAGE {
                     match parse_smb_version(&nbss_part_hdr.data) {
-                        IResult::Done(_, ref smb) => {
+                        Ok((_, ref smb)) => {
                             SCLogDebug!("SMB {:?}", smb);
                             if smb.version == 0xff_u8 { // SMB1
                                 SCLogDebug!("SMBv1 record");
                                 match parse_smb_record(&nbss_part_hdr.data) {
-                                    IResult::Done(_, ref r) => {
+                                    Ok((_, ref r)) => {
                                         if r.command == SMB1_COMMAND_WRITE_ANDX {
                                             // see if it's a write to a pipe. We only handle those
                                             // if complete.
@@ -1295,7 +1296,7 @@ impl SMBState {
                             } else if smb.version == 0xfe_u8 { // SMB2
                                 SCLogDebug!("SMBv2 record");
                                 match parse_smb2_request_record(&nbss_part_hdr.data) {
-                                    IResult::Done(_, ref smb_record) => {
+                                    Ok((_, ref smb_record)) => {
                                         SCLogDebug!("SMB2: partial record {}",
                                                 &smb2_command_string(smb_record.command));
                                         if smb_record.command == SMB2_COMMAND_WRITE {
@@ -1368,9 +1369,9 @@ impl SMBState {
         if self.ts_gap {
             SCLogDebug!("TS trying to catch up after GAP (input {})", cur_i.len());
             match search_smb_record(cur_i) {
-                IResult::Done(_, pg) => {
+                Ok((_, pg)) => {
                     SCLogDebug!("smb record found");
-                    let smb2_offset = cur_i.len() - pg.data.len();
+                    let smb2_offset = cur_i.len() - pg.len();
                     if smb2_offset < 4 {
                         return 0;
                     }
@@ -1388,17 +1389,17 @@ impl SMBState {
         }
         while cur_i.len() > 0 { // min record size
             match parse_nbss_record(cur_i) {
-                IResult::Done(rem, ref nbss_hdr) => {
+                Ok((rem, ref nbss_hdr)) => {
                     if nbss_hdr.message_type == NBSS_MSGTYPE_SESSION_MESSAGE {
                         // we have the full records size worth of data,
                         // let's parse it
                         match parse_smb_version(&nbss_hdr.data) {
-                            IResult::Done(_, ref smb) => {
+                            Ok((_, ref smb)) => {
                                 SCLogDebug!("SMB {:?}", smb);
                                 if smb.version == 0xff_u8 { // SMB1
                                     SCLogDebug!("SMBv1 record");
                                     match parse_smb_record(&nbss_hdr.data) {
-                                        IResult::Done(_, ref smb_record) => {
+                                        Ok((_, ref smb_record)) => {
                                             smb1_request_record(self, smb_record);
                                         },
                                         _ => {
@@ -1411,7 +1412,7 @@ impl SMBState {
                                     while nbss_data.len() > 0 {
                                         SCLogDebug!("SMBv2 record");
                                         match parse_smb2_request_record(&nbss_data) {
-                                            IResult::Done(nbss_data_rem, ref smb_record) => {
+                                            Ok((nbss_data_rem, ref smb_record)) => {
                                                 SCLogDebug!("nbss_data_rem {}", nbss_data_rem.len());
 
                                                 smb2_request_record(self, smb_record);
@@ -1428,7 +1429,7 @@ impl SMBState {
                                     while nbss_data.len() > 0 {
                                         SCLogDebug!("SMBv3 transform record");
                                         match parse_smb3_transform_record(&nbss_data) {
-                                            IResult::Done(nbss_data_rem, ref _smb3_record) => {
+                                            Ok((nbss_data_rem, ref _smb3_record)) => {
                                                 nbss_data = nbss_data_rem;
                                             },
                                             _ => {
@@ -1449,14 +1450,14 @@ impl SMBState {
                     }
                     cur_i = rem;
                 },
-                IResult::Incomplete(_) => {
+                Err(nom::Err::Incomplete(_)) => {
                     let consumed = self.parse_tcp_data_ts_partial(cur_i);
                     cur_i = &cur_i[consumed ..];
 
                     self.tcp_buffer_ts.extend_from_slice(cur_i);
                     break;
                 },
-                IResult::Error(_) => {
+                Err(_) => {
                     self.set_event(SMBEvent::MalformedData);
                     return 1;
                 },
@@ -1477,7 +1478,7 @@ impl SMBState {
             // lost so we give up.
             if input.len() > 8 {
                 match parse_nbss_record_partial(input) {
-                    IResult::Done(_, ref hdr) => {
+                    Ok((_, ref hdr)) => {
                         if !hdr.is_smb() {
                             SCLogDebug!("partial NBSS, not SMB and no known msg type {}", hdr.message_type);
                             self.trunc_tc();
@@ -1491,16 +1492,16 @@ impl SMBState {
         }
 
         match parse_nbss_record_partial(input) {
-            IResult::Done(output, ref nbss_part_hdr) => {
+            Ok((output, ref nbss_part_hdr)) => {
                 SCLogDebug!("parse_nbss_record_partial ok, output len {}", output.len());
                 if nbss_part_hdr.message_type == NBSS_MSGTYPE_SESSION_MESSAGE {
                     match parse_smb_version(&nbss_part_hdr.data) {
-                        IResult::Done(_, ref smb) => {
+                        Ok((_, ref smb)) => {
                             SCLogDebug!("SMB {:?}", smb);
                             if smb.version == 255u8 { // SMB1
                                 SCLogDebug!("SMBv1 record");
                                 match parse_smb_record(&nbss_part_hdr.data) {
-                                    IResult::Done(_, ref r) => {
+                                    Ok((_, ref r)) => {
                                         SCLogDebug!("SMB1: partial record {}",
                                                 r.command);
                                         if r.command == SMB1_COMMAND_READ_ANDX {
@@ -1523,7 +1524,7 @@ impl SMBState {
                             } else if smb.version == 254u8 { // SMB2
                                 SCLogDebug!("SMBv2 record");
                                 match parse_smb2_response_record(&nbss_part_hdr.data) {
-                                    IResult::Done(_, ref smb_record) => {
+                                    Ok((_, ref smb_record)) => {
                                         SCLogDebug!("SMB2: partial record {}",
                                                 &smb2_command_string(smb_record.command));
                                         if smb_record.command == SMB2_COMMAND_READ {
@@ -1594,9 +1595,9 @@ impl SMBState {
         if self.tc_gap {
             SCLogDebug!("TC trying to catch up after GAP (input {})", cur_i.len());
             match search_smb_record(cur_i) {
-                IResult::Done(_, pg) => {
+                Ok((_, pg)) => {
                     SCLogDebug!("smb record found");
-                    let smb2_offset = cur_i.len() - pg.data.len();
+                    let smb2_offset = cur_i.len() - pg.len();
                     if smb2_offset < 4 {
                         return 0;
                     }
@@ -1614,17 +1615,17 @@ impl SMBState {
         }
         while cur_i.len() > 0 { // min record size
             match parse_nbss_record(cur_i) {
-                IResult::Done(rem, ref nbss_hdr) => {
+                Ok((rem, ref nbss_hdr)) => {
                     if nbss_hdr.message_type == NBSS_MSGTYPE_SESSION_MESSAGE {
                         // we have the full records size worth of data,
                         // let's parse it
                         match parse_smb_version(&nbss_hdr.data) {
-                            IResult::Done(_, ref smb) => {
+                            Ok((_, ref smb)) => {
                                 SCLogDebug!("SMB {:?}", smb);
                                 if smb.version == 0xff_u8 { // SMB1
                                     SCLogDebug!("SMBv1 record");
                                     match parse_smb_record(&nbss_hdr.data) {
-                                        IResult::Done(_, ref smb_record) => {
+                                        Ok((_, ref smb_record)) => {
                                             smb1_response_record(self, smb_record);
                                         },
                                         _ => {
@@ -1637,7 +1638,7 @@ impl SMBState {
                                     while nbss_data.len() > 0 {
                                         SCLogDebug!("SMBv2 record");
                                         match parse_smb2_response_record(&nbss_data) {
-                                            IResult::Done(nbss_data_rem, ref smb_record) => {
+                                            Ok((nbss_data_rem, ref smb_record)) => {
                                                 smb2_response_record(self, smb_record);
                                                 nbss_data = nbss_data_rem;
                                             },
@@ -1652,7 +1653,7 @@ impl SMBState {
                                     while nbss_data.len() > 0 {
                                         SCLogDebug!("SMBv3 transform record");
                                         match parse_smb3_transform_record(&nbss_data) {
-                                            IResult::Done(nbss_data_rem, ref _smb3_record) => {
+                                            Ok((nbss_data_rem, ref _smb3_record)) => {
                                                 nbss_data = nbss_data_rem;
                                             },
                                             _ => {
@@ -1663,11 +1664,11 @@ impl SMBState {
                                     }
                                 }
                             },
-                            IResult::Incomplete(_) => {
+                            Err(nom::Err::Incomplete(_)) => {
                                 // not enough data to contain basic SMB hdr
                                 // TODO event: empty NBSS_MSGTYPE_SESSION_MESSAGE
                             },
-                            IResult::Error(_) => {
+                            Err(_) => {
                                 self.set_event(SMBEvent::MalformedData);
                                 return 1;
                             },
@@ -1677,7 +1678,7 @@ impl SMBState {
                     }
                     cur_i = rem;
                 },
-                IResult::Incomplete(needed) => {
+                Err(nom::Err::Incomplete(needed)) => {
                     SCLogDebug!("INCOMPLETE have {} needed {:?}", cur_i.len(), needed);
                     let consumed = self.parse_tcp_data_tc_partial(cur_i);
                     cur_i = &cur_i[consumed ..];
@@ -1686,7 +1687,7 @@ impl SMBState {
                     self.tcp_buffer_tc.extend_from_slice(cur_i);
                     break;
                 },
-                IResult::Error(_) => {
+                Err(_) => {
                     self.set_event(SMBEvent::MalformedData);
                     return 1;
                 },
@@ -1869,21 +1870,72 @@ pub extern "C" fn rs_smb_parse_response_tcp_gap(
 // probing parser
 // return 1 if found, 0 is not found
 #[no_mangle]
-pub extern "C" fn rs_smb_probe_tcp(input: *const libc::uint8_t, len: libc::uint32_t)
-                               -> libc::int8_t
+pub extern "C" fn rs_smb_probe_tcp(direction: libc::uint8_t,
+        input: *const libc::uint8_t, len: libc::uint32_t,
+        rdir: *mut libc::uint8_t)
+    -> libc::int8_t
 {
     let slice = build_slice!(input, len as usize);
     match search_smb_record(slice) {
-        IResult::Done(_, _) => {
+        Ok((_, ref data)) => {
             SCLogDebug!("smb found");
-            return 1;
+            match parse_smb_version(data) {
+                Ok((_, ref smb)) => {
+                    SCLogDebug!("SMB {:?}", smb);
+                    if smb.version == 0xff_u8 { // SMB1
+                        SCLogDebug!("SMBv1 record");
+                        match parse_smb_record(data) {
+                            Ok((_, ref smb_record)) => {
+                                if smb_record.flags & 0x80 != 0 {
+                                    SCLogDebug!("RESPONSE {:02x}", smb_record.flags);
+                                    if direction & STREAM_TOSERVER != 0 {
+                                        unsafe { *rdir = STREAM_TOCLIENT; }
+                                    }
+                                } else {
+                                    SCLogDebug!("REQUEST {:02x}", smb_record.flags);
+                                    if direction & STREAM_TOCLIENT != 0 {
+                                        unsafe { *rdir = STREAM_TOSERVER; }
+                                    }
+                                }
+                                return 1;
+                            },
+                            _ => { },
+                        }
+                    } else if smb.version == 0xfe_u8 { // SMB2
+                        SCLogDebug!("SMB2 record");
+                        match parse_smb2_record_direction(data) {
+                            Ok((_, ref smb_record)) => {
+                                if direction & STREAM_TOSERVER != 0 {
+                                    SCLogDebug!("direction STREAM_TOSERVER smb_record {:?}", smb_record);
+                                    if !smb_record.request {
+                                        unsafe { *rdir = STREAM_TOCLIENT; }
+                                    }
+                                } else {
+                                    SCLogDebug!("direction STREAM_TOCLIENT smb_record {:?}", smb_record);
+                                    if smb_record.request {
+                                        unsafe { *rdir = STREAM_TOSERVER; }
+                                    }
+                                }
+                            },
+                            _ => {},
+                        }
+                    }
+                    else if smb.version == 0xfd_u8 { // SMB3 transform
+                        SCLogDebug!("SMB3 record");
+                    }
+                    return 1;
+                },
+                    _ => {
+                        SCLogDebug!("smb not found in {:?}", slice);
+                    },
+            }
         },
         _ => {
-            SCLogDebug!("smb not found in {:?}", slice);
+            SCLogDebug!("no dice");
         },
     }
     match parse_nbss_record_partial(slice) {
-        IResult::Done(_, ref hdr) => {
+        Ok((_, ref hdr)) => {
             if hdr.is_smb() {
                 SCLogDebug!("smb found");
                 return 1;

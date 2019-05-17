@@ -33,7 +33,6 @@
 
 #include "detect-krb5-sname.h"
 
-#ifdef HAVE_RUST
 #include "rust.h"
 #include "app-layer-krb5.h"
 #include "rust-krb-detect-gen.h"
@@ -47,7 +46,8 @@ struct Krb5PrincipalNameDataArgs {
 
 static int DetectKrb5SNameSetup(DetectEngineCtx *de_ctx, Signature *s, const char *arg)
 {
-    DetectBufferSetActiveList(s, g_krb5_sname_buffer_id);
+    if (DetectBufferSetActiveList(s, g_krb5_sname_buffer_id) < 0)
+        return -1;
 
     if (DetectSignatureSetAppProto(s, ALPROTO_KRB5) != 0)
         return -1;
@@ -109,11 +109,11 @@ static int DetectEngineInspectKrb5SName(
         det_ctx->inspection_recursion_counter = 0;
 
         const int match = DetectEngineContentInspection(de_ctx, det_ctx, s, engine->smd,
-                                              f,
+                                              NULL, f,
                                               (uint8_t *)buffer->inspect,
                                               buffer->inspect_len,
                                               buffer->inspect_offset, DETECT_CI_FLAGS_SINGLE,
-                                              DETECT_ENGINE_CONTENT_INSPECTION_MODE_STATE, NULL);
+                                              DETECT_ENGINE_CONTENT_INSPECTION_MODE_STATE);
         if (match == 1) {
             return DETECT_ENGINE_INSPECT_SIG_MATCH;
         }
@@ -192,9 +192,10 @@ static int PrefilterMpmKrb5SNameRegister(DetectEngineCtx *de_ctx,
 
 void DetectKrb5SNameRegister(void)
 {
-    sigmatch_table[DETECT_AL_KRB5_SNAME].name = "krb5_sname";
+    sigmatch_table[DETECT_AL_KRB5_SNAME].name = "krb5.sname";
+    sigmatch_table[DETECT_AL_KRB5_SNAME].alias = "krb5_sname";
     sigmatch_table[DETECT_AL_KRB5_SNAME].Setup = DetectKrb5SNameSetup;
-    sigmatch_table[DETECT_AL_KRB5_SNAME].flags |= SIGMATCH_NOOPT;
+    sigmatch_table[DETECT_AL_KRB5_SNAME].flags |= SIGMATCH_NOOPT|SIGMATCH_INFO_STICKY_BUFFER;
     sigmatch_table[DETECT_AL_KRB5_SNAME].desc = "sticky buffer to match on Kerberos 5 server name";
 
     DetectAppLayerMpmRegister2("krb5_sname", SIG_FLAG_TOCLIENT, 2,
@@ -210,9 +211,3 @@ void DetectKrb5SNameRegister(void)
 
     g_krb5_sname_buffer_id = DetectBufferTypeGetByName("krb5_sname");
 }
-
-#else /* NO RUST */
-
-void DetectKrb5SNameRegister(void) {}
-
-#endif

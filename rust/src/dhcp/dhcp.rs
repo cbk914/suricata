@@ -17,12 +17,11 @@
 
 use applayer;
 use core;
-use core::{ALPROTO_UNKNOWN, AppProto, Flow};
+use core::{ALPROTO_UNKNOWN, AppProto, Flow, IPPROTO_UDP};
 use core::{sc_detect_engine_state_free, sc_app_layer_decoder_events_free_events};
 use dhcp::parser::*;
 use libc;
 use log::*;
-use nom;
 use parser::*;
 use std;
 use std::ffi::{CStr,CString};
@@ -144,7 +143,7 @@ impl DHCPState {
 
     pub fn parse(&mut self, input: &[u8]) -> bool {
         match dhcp_parse(input) {
-            nom::IResult::Done(_, message) => {
+            Ok((_, message)) => {
                 let malformed_options = message.malformed_options;
                 let truncated_options = message.truncated_options;
                 self.tx_id += 1;
@@ -220,15 +219,18 @@ impl DHCPState {
 
 #[no_mangle]
 pub extern "C" fn rs_dhcp_probing_parser(_flow: *const Flow,
+                                         _direction: u8,
                                          input: *const libc::uint8_t,
-                                         input_len: u32) -> AppProto {
+                                         input_len: u32,
+                                         _rdir: *mut u8) -> AppProto
+{
     if input_len < DHCP_MIN_FRAME_LEN {
         return ALPROTO_UNKNOWN;
     }
 
     let slice = build_slice!(input, input_len as usize);
     match parse_header(slice) {
-        nom::IResult::Done(_, _) => {
+        Ok((_, _)) => {
             return unsafe { ALPROTO_DHCP };
         }
         _ => {
@@ -398,7 +400,7 @@ pub unsafe extern "C" fn rs_dhcp_register_parser() {
     let parser = RustParser {
         name: PARSER_NAME.as_ptr() as *const libc::c_char,
         default_port: ports.as_ptr(),
-        ipproto: libc::IPPROTO_UDP,
+        ipproto: IPPROTO_UDP,
         probe_ts: rs_dhcp_probing_parser,
         probe_tc: rs_dhcp_probing_parser,
         min_depth: 0,

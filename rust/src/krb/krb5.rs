@@ -20,7 +20,8 @@
 use libc;
 use std;
 use std::ffi::{CStr,CString};
-use nom::{IResult,be_u32};
+use nom;
+use nom::be_u32;
 use der_parser::der_read_element_header;
 use kerberos_parser::krb5_parser;
 use kerberos_parser::krb5::{EncryptionType,ErrorCode,MessageType,PrincipalName,Realm};
@@ -107,7 +108,7 @@ impl KRB5State {
     /// Returns The number of messages parsed, or -1 on error
     fn parse(&mut self, i: &[u8], _direction: u8) -> i32 {
         match der_read_element_header(i) {
-            IResult::Done(_rem,hdr) => {
+            Ok((_rem,hdr)) => {
                 // Kerberos messages start with an APPLICATION header
                 if hdr.class != 0b01 { return 1; }
                 match hdr.tag {
@@ -116,7 +117,7 @@ impl KRB5State {
                     },
                     11 => {
                         let res = krb5_parser::parse_as_rep(i);
-                        res.map(|kdc_rep| {
+                        if let Ok((_,kdc_rep)) = res {
                             let mut tx = self.new_tx();
                             tx.msg_type = MessageType::KRB_AS_REP;
                             tx.cname = Some(kdc_rep.cname);
@@ -127,7 +128,7 @@ impl KRB5State {
                             if test_weak_encryption(kdc_rep.enc_part.etype) {
                                 self.set_event(KRB5Event::WeakEncryption);
                             }
-                        });
+                        };
                         self.req_id = 0;
                     },
                     12 => {
@@ -135,7 +136,7 @@ impl KRB5State {
                     },
                     13 => {
                         let res = krb5_parser::parse_tgs_rep(i);
-                        res.map(|kdc_rep| {
+                        if let Ok((_,kdc_rep)) = res {
                             let mut tx = self.new_tx();
                             tx.msg_type = MessageType::KRB_TGS_REP;
                             tx.cname = Some(kdc_rep.cname);
@@ -146,7 +147,7 @@ impl KRB5State {
                             if test_weak_encryption(kdc_rep.enc_part.etype) {
                                 self.set_event(KRB5Event::WeakEncryption);
                             }
-                        });
+                        };
                         self.req_id = 0;
                     },
                     14 => {
@@ -157,7 +158,7 @@ impl KRB5State {
                     },
                     30 => {
                         let res = krb5_parser::parse_krb_error(i);
-                        res.map(|error| {
+                        if let Ok((_,error)) = res {
                             let mut tx = self.new_tx();
                             tx.msg_type = MessageType(self.req_id as u32);
                             tx.cname = error.cname;
@@ -165,19 +166,19 @@ impl KRB5State {
                             tx.sname = Some(error.sname);
                             tx.error_code = Some(error.error_code);
                             self.transactions.push(tx);
-                        });
+                        };
                         self.req_id = 0;
                     },
                     _ => { SCLogDebug!("unknown/unsupported tag {}", hdr.tag); },
                 }
                 0
             },
-            IResult::Incomplete(_) => {
+            Err(nom::Err::Incomplete(_)) => {
                 SCLogDebug!("Insufficient data while parsing KRB5 data");
                 self.set_event(KRB5Event::MalformedData);
                 -1
             },
-            IResult::Error(_) => {
+            Err(_) => {
                 SCLogDebug!("Error while parsing KRB5 data");
                 self.set_event(KRB5Event::MalformedData);
                 -1
@@ -404,12 +405,16 @@ pub extern "C" fn rs_krb5_state_get_event_info(event_name: *const libc::c_char,
 static mut ALPROTO_KRB5 : AppProto = ALPROTO_UNKNOWN;
 
 #[no_mangle]
-pub extern "C" fn rs_krb5_probing_parser(_flow: *const Flow, input:*const libc::uint8_t, input_len: u32) -> AppProto {
+pub extern "C" fn rs_krb5_probing_parser(_flow: *const Flow,
+        _direction: u8,
+        input:*const libc::uint8_t, input_len: u32,
+        _rdir: *mut u8) -> AppProto
+{
     let slice = build_slice!(input,input_len as usize);
     let alproto = unsafe{ ALPROTO_KRB5 };
     if slice.len() <= 10 { return unsafe{ALPROTO_FAILED}; }
     match der_read_element_header(slice) {
-        IResult::Done(rem, ref hdr) => {
+        Ok((rem, ref hdr)) => {
             // Kerberos messages start with an APPLICATION header
             if hdr.class != 0b01 { return unsafe{ALPROTO_FAILED}; }
             // Tag number should be <= 30
@@ -417,7 +422,7 @@ pub extern "C" fn rs_krb5_probing_parser(_flow: *const Flow, input:*const libc::
             // Kerberos messages contain sequences
             if rem.is_empty() || rem[0] != 0x30 { return unsafe{ALPROTO_FAILED}; }
             // Check kerberos version
-            if let IResult::Done(rem,_hdr) = der_read_element_header(rem) {
+            if let Ok((rem,_hdr)) = der_read_element_header(rem) {
                 if rem.len() > 5 {
                     match (rem[2],rem[3],rem[4]) {
                         // Encoding of DER integer 5 (version)
@@ -428,29 +433,34 @@ pub extern "C" fn rs_krb5_probing_parser(_flow: *const Flow, input:*const libc::
             }
             return unsafe{ALPROTO_FAILED};
         },
-        IResult::Incomplete(_) => {
+        Err(nom::Err::Incomplete(_)) => {
             return ALPROTO_UNKNOWN;
         },
-        IResult::Error(_) => {
+        Err(_) => {
             return unsafe{ALPROTO_FAILED};
         },
     }
 }
 
 #[no_mangle]
-pub extern "C" fn rs_krb5_probing_parser_tcp(_flow: *const Flow, input:*const libc::uint8_t, input_len: u32) -> AppProto {
+pub extern "C" fn rs_krb5_probing_parser_tcp(_flow: *const Flow,
+        direction: u8,
+        input:*const libc::uint8_t, input_len: u32,
+        rdir: *mut u8) -> AppProto
+{
     let slice = build_slice!(input,input_len as usize);
     if slice.len() <= 14 { return unsafe{ALPROTO_FAILED}; }
     match be_u32(slice) {
-        IResult::Done(rem, record_mark) => {
+        Ok((rem, record_mark)) => {
             // protocol implementations forbid very large requests
             if record_mark > 16384 { return unsafe{ALPROTO_FAILED}; }
-            return rs_krb5_probing_parser(_flow, rem.as_ptr(), rem.len() as u32);
+            return rs_krb5_probing_parser(_flow, direction,
+                    rem.as_ptr(), rem.len() as u32, rdir);
         },
-        IResult::Incomplete(_) => {
+        Err(nom::Err::Incomplete(_)) => {
             return ALPROTO_UNKNOWN;
         },
-        IResult::Error(_) => {
+        Err(_) => {
             return unsafe{ALPROTO_FAILED};
         },
     }
@@ -514,7 +524,7 @@ pub extern "C" fn rs_krb5_parse_request_tcp(_flow: *const core::Flow,
     while cur_i.len() > 0 {
         if state.record_ts == 0 {
             match be_u32(cur_i) {
-                IResult::Done(rem,record) => {
+                Ok((rem,record)) => {
                     state.record_ts = record as usize;
                     cur_i = rem;
                 },
@@ -572,7 +582,7 @@ pub extern "C" fn rs_krb5_parse_response_tcp(_flow: *const core::Flow,
     while cur_i.len() > 0 {
         if state.record_tc == 0 {
             match be_u32(cur_i) {
-                IResult::Done(rem,record) => {
+                Ok((rem,record)) => {
                     state.record_tc = record as usize;
                     cur_i = rem;
                 },
@@ -607,7 +617,7 @@ pub unsafe extern "C" fn rs_register_krb5_parser() {
     let mut parser = RustParser {
         name              : PARSER_NAME.as_ptr() as *const libc::c_char,
         default_port      : default_port.as_ptr(),
-        ipproto           : libc::IPPROTO_UDP,
+        ipproto           : core::IPPROTO_UDP,
         probe_ts          : rs_krb5_probing_parser,
         probe_tc          : rs_krb5_probing_parser,
         min_depth         : 0,
@@ -647,7 +657,7 @@ pub unsafe extern "C" fn rs_register_krb5_parser() {
         SCLogDebug!("Protocol detecter and parser disabled for KRB5/UDP.");
     }
     // register TCP parser
-    parser.ipproto = libc::IPPROTO_TCP;
+    parser.ipproto = core::IPPROTO_TCP;
     parser.probe_ts = rs_krb5_probing_parser_tcp;
     parser.probe_tc = rs_krb5_probing_parser_tcp;
     parser.parse_ts = rs_krb5_parse_request_tcp;

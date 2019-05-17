@@ -106,6 +106,9 @@ enum {
     HTTP_DECODER_EVENT_REQUEST_LINE_LEADING_WHITESPACE,
     HTTP_DECODER_EVENT_TOO_MANY_ENCODING_LAYERS,
     HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER,
+    HTTP_DECODER_EVENT_AUTH_UNRECOGNIZED,
+    HTTP_DECODER_EVENT_REQUEST_HEADER_REPETITION,
+    HTTP_DECODER_EVENT_RESPONSE_HEADER_REPETITION,
 
     /* suricata errors/warnings */
     HTTP_DECODER_EVENT_MULTIPART_GENERIC_ERROR,
@@ -234,6 +237,7 @@ typedef struct HtpState_ {
     uint16_t flags;
     uint16_t events;
     uint16_t htp_messages_offset; /**< offset into conn->messages list */
+    uint32_t file_track_id;             /**< used to assign file track ids to files */
     uint64_t last_request_data_stamp;
     uint64_t last_response_data_stamp;
 } HtpState;
