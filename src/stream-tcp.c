@@ -5191,13 +5191,7 @@ TmEcode StreamTcpThreadInit(ThreadVars *tv, void *initdata, void **data)
         SCLogDebug("pool size %d, thread ssn_pool_id %d", PoolThreadSize(ssn_pool), stt->ssn_pool_id);
     } else {
         /* grow ssn_pool until we have a element for our thread id */
-        stt->ssn_pool_id = PoolThreadGrow(ssn_pool,
-                0, /* unlimited */
-                stream_config.prealloc_sessions,
-                sizeof(TcpSession),
-                StreamTcpSessionPoolAlloc,
-                StreamTcpSessionPoolInit, NULL,
-                StreamTcpSessionPoolCleanup, NULL);
+        stt->ssn_pool_id = PoolThreadExpand(ssn_pool);
         SCLogDebug("pool size %d, thread ssn_pool_id %d", PoolThreadSize(ssn_pool), stt->ssn_pool_id);
     }
     SCMutexUnlock(&ssn_pool_mutex);
@@ -10290,7 +10284,7 @@ static int StreamTcpTest40(void)
 
     DecodeVLAN(&tv, &dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p), NULL);
 
-    FAIL_IF(p->vlanh[0] == NULL);
+    FAIL_IF(p->vlan_id[0] == 0);
 
     FAIL_IF(p->tcph == NULL);
 

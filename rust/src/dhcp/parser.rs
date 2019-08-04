@@ -169,8 +169,8 @@ named!(pub parse_generic_option<DHCPOption>,
            ))
 );
 
-/// Parse a single DHCP option. When option 255 (END) is parsed, the remaining
-/// data will be consumed.
+// Parse a single DHCP option. When option 255 (END) is parsed, the remaining
+// data will be consumed.
 named!(pub parse_option<DHCPOption>,
        switch!(peek!(be_u8),
                // End of options case. We consume the rest of the data
@@ -190,8 +190,8 @@ named!(pub parse_option<DHCPOption>,
                _ => call!(parse_generic_option)
        ));
 
-/// Parse and return all the options. Upon the end of option indicator
-/// all the data will be consumed.
+// Parse and return all the options. Upon the end of option indicator
+// all the data will be consumed.
 named!(pub parse_all_options<Vec<DHCPOption>>, many0!(complete!(call!(parse_option))));
 
 pub fn dhcp_parse(input: &[u8]) -> IResult<&[u8], DHCPMessage> {
@@ -199,7 +199,7 @@ pub fn dhcp_parse(input: &[u8]) -> IResult<&[u8], DHCPMessage> {
         Ok((rem, header)) => {
             let mut options = Vec::new();
             let mut next = rem;
-            let mut malformed_options = false;
+            let malformed_options = false;
             let mut truncated_options = false;
             loop {
                 match parse_option(next) {

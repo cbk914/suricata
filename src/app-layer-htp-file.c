@@ -186,7 +186,7 @@ int HTPParseContentRange(bstr * rawvalue, HtpContentRange *range)
 
     if (data[pos] == '*') {
         // case with size only
-        if (len < pos + 1 || data[pos+1] != '/') {
+        if (len <= pos + 1 || data[pos+1] != '/') {
             range->size = -1;
             return -1;
         }
@@ -196,13 +196,13 @@ int HTPParseContentRange(bstr * rawvalue, HtpContentRange *range)
         // case with start and end
         range->start = bstr_util_mem_to_pint(data + pos, len - pos, 10, &last_pos);
         pos += last_pos;
-        if (len < pos || data[pos] != '-') {
+        if (len <= pos + 1 || data[pos] != '-') {
             return -1;
         }
         pos++;
         range->end = bstr_util_mem_to_pint(data + pos, len - pos, 10, &last_pos);
         pos += last_pos;
-        if (len < pos || data[pos] != '/') {
+        if (len <= pos + 1 || data[pos] != '/') {
             return -1;
         }
         pos++;
@@ -1264,7 +1264,8 @@ static int HTPFileParserTest08(void)
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, tx);
     if (decoder_events == NULL) {
         printf("no app events: ");
         FLOWLOCK_UNLOCK(f);
@@ -1386,7 +1387,8 @@ static int HTPFileParserTest09(void)
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, tx);
     if (decoder_events == NULL) {
         printf("no app events: ");
         FLOWLOCK_UNLOCK(f);
@@ -1506,7 +1508,8 @@ static int HTPFileParserTest10(void)
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *tx = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, tx);
     if (decoder_events != NULL) {
         printf("app events: ");
         FLOWLOCK_UNLOCK(f);
@@ -1644,7 +1647,8 @@ static int HTPFileParserTest11(void)
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, txtmp);
     if (decoder_events != NULL) {
         printf("app events: ");
         FLOWLOCK_UNLOCK(f);
@@ -1684,6 +1688,8 @@ end:
     return result;
 }
 
+void AppLayerHtpFileRegisterTests (void);
+#include "tests/app-layer-htp-file.c"
 #endif /* UNITTESTS */
 
 void HTPFileParserRegisterTests(void)

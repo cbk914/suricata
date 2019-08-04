@@ -44,6 +44,7 @@ vars:
     MODBUS_PORTS: 502
     FILE_DATA_PORTS: "[$HTTP_PORTS,110,143]"
     FTP_PORTS: 21
+    VXLAN_PORTS: 4789
 
 ##
 ## Step 2: select outputs to enable
@@ -207,7 +208,7 @@ outputs:
             #session-resumption: no
             # custom allows to control which tls fields that are included
             # in eve-log
-            #custom: [subject, issuer, session_resumed, serial, fingerprint, sni, version, not_before, not_after, certificate, chain, ja3]
+            #custom: [subject, issuer, session_resumed, serial, fingerprint, sni, version, not_before, not_after, certificate, chain, ja3, ja3s]
         - files:
             force-magic: no   # force logging magic on all logged files
             # force logging of checksums, available hash functions are md5,
@@ -231,11 +232,13 @@ outputs:
             #md5: [body, subject]
 
         #- dnp3
+        - ftp
         - nfs
         - smb
         - tftp
         - ikev2
         - krb5
+        - snmp
         - dhcp:
             enabled: yes
             # When extended mode is on, all DHCP messages are logged
@@ -327,14 +330,6 @@ outputs:
   - tls-store:
       enabled: no
       #certs-log-dir: certs # directory to store the certificates files
-
-  # a line based log of DNS requests and/or replies (no alerts)
-  # Note: not available when Rust is enabled (--enable-rust).
-  - dns-log:
-      enabled: no
-      filename: dns.log
-      append: yes
-      #filetype: regular # 'regular', 'unix_stream' or 'unix_dgram'
 
   # Packet log... log packets in pcap format. 3 modes of operation: "normal"
   # "multi" and "sguil".
@@ -629,15 +624,10 @@ af-packet:
     # Default AF_PACKET cluster type. AF_PACKET can load balance per flow or per hash.
     # This is only supported for Linux kernel > 3.1
     # possible value are:
-    #  * cluster_round_robin: round robin load balancing
     #  * cluster_flow: all packets of a given flow are send to the same socket
     #  * cluster_cpu: all packets treated in kernel by a CPU are send to the same socket
     #  * cluster_qm: all packets linked by network card to a RSS queue are sent to the same
     #  socket. Requires at least Linux 3.14.
-    #  * cluster_random: packets are sent randomly to sockets but with an equipartition.
-    #  Requires at least Linux 3.14.
-    #  * cluster_rollover: kernel rotates between sockets filling each socket before moving
-    #  to the next. Requires at least Linux 3.10.
     #  * cluster_ebpf: eBPF file load balancing. See doc/userguide/capture-hardware/ebpf-xdp.rst for
     #  more info.
     # Recommended modes are cluster_flow on most boxes and cluster_cpu or cluster_qm on system
@@ -646,10 +636,6 @@ af-packet:
     # In some fragmentation case, the hash can not be computed. If "defrag" is set
     # to yes, the kernel will do the needed defragmentation before sending the packets.
     defrag: yes
-    # After Linux kernel 3.10 it is possible to activate the rollover option: if a socket is
-    # full then kernel will send the packet on the next socket with room available. This option
-    # can minimize packet drop and increase the treated bandwidth on single intensive flow.
-    #rollover: yes
     # To use the ring feature of AF_PACKET, set 'use-mmap' to yes
     #use-mmap: yes
     # Lock memory map to avoid it goes to swap. Be careful that over subscribing could lock
@@ -699,14 +685,13 @@ af-packet:
     #copy-mode: ips
     #copy-iface: eth1
     #  For eBPF and XDP setup including bypass, filter and load balancing, please
-    #  see doc/userguide/capture/ebpf-xdt.rst for more info.
+    #  see doc/userguide/capture-hardware/ebpf-xdp.rst for more info.
 
   # Put default values here. These will be used for an interface that is not
   # in the list above.
   - interface: default
     #threads: auto
     #use-mmap: no
-    #rollover: yes
     #tpacket-v3: yes
 
 # Cross platform libpcap capture support
@@ -768,6 +753,8 @@ pcap-file:
 app-layer:
   protocols:
     krb5:
+      enabled: yes
+    snmp:
       enabled: yes
     ikev2:
       enabled: yes
@@ -1119,6 +1106,10 @@ unix-command:
 #magic-file: /usr/share/file/magic
 @e_magic_file_comment@magic-file: @e_magic_file@
 
+# GeoIP2 database file. Specify path and filename of GeoIP2 database
+# if using rules with "geoip" rule option.
+#geoip-database: /usr/local/share/GeoLite2/GeoLite2-Country.mmdb
+
 legacy:
   uricontent: enabled
 
@@ -1385,9 +1376,14 @@ host:
 
 decoder:
   # Teredo decoder is known to not be completely accurate
-  # it will sometimes detect non-teredo as teredo.
+  # as it will sometimes detect non-teredo as teredo.
   teredo:
     enabled: true
+  # VXLAN decoder is assigned to up to 4 UDP ports. By default only the
+  # IANA assigned port 4789 is enabled.
+  vxlan:
+    enabled: true
+    ports: $VXLAN_PORTS # syntax: '8472, 4789'
 
 
 ##

@@ -174,18 +174,25 @@ static int TemplateStateGetEventInfo(const char *event_name, int *event_id,
     return 0;
 }
 
-static AppLayerDecoderEvents *TemplateGetEvents(void *statev, uint64_t tx_id)
+static int TemplateStateGetEventInfoById(int event_id, const char **event_name,
+                                         AppLayerEventType *event_type)
 {
-    TemplateState *state = statev;
-    TemplateTransaction *tx;
-
-    TAILQ_FOREACH(tx, &state->tx_list, next) {
-        if (tx->tx_id == tx_id) {
-            return tx->decoder_events;
-        }
+    *event_name = SCMapEnumValueToName(event_id, template_decoder_event_table);
+    if (*event_name == NULL) {
+        SCLogError(SC_ERR_INVALID_ENUM_MAP, "event \"%d\" not present in "
+                   "template enum map table.",  event_id);
+        /* This should be treated as fatal. */
+        return -1;
     }
 
-    return NULL;
+    *event_type = APP_LAYER_EVENT_TYPE_TRANSACTION;
+
+    return 0;
+}
+
+static AppLayerDecoderEvents *TemplateGetEvents(void *tx)
+{
+    return ((TemplateTransaction *)tx)->decoder_events;
 }
 
 /**
@@ -534,6 +541,8 @@ void RegisterTemplateParsers(void)
 
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateStateGetEventInfo);
+        AppLayerParserRegisterGetEventInfoById(IPPROTO_TCP, ALPROTO_TEMPLATE,
+            TemplateStateGetEventInfoById);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetEvents);
     }

@@ -30,7 +30,7 @@
 #include "detect.h"
 #include "detect-parse.h"
 
-#include "detect-window.h"
+#include "detect-tcp-window.h"
 #include "flow.h"
 #include "flow-var.h"
 
@@ -47,7 +47,7 @@
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
-static int DetectWindowMatch(ThreadVars *, DetectEngineThreadCtx *, Packet *,
+static int DetectWindowMatch(DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectWindowSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectWindowRegisterTests(void);
@@ -58,7 +58,8 @@ void DetectWindowFree(void *);
  */
 void DetectWindowRegister (void)
 {
-    sigmatch_table[DETECT_WINDOW].name = "window";
+    sigmatch_table[DETECT_WINDOW].name = "tcp.window";
+    sigmatch_table[DETECT_WINDOW].alias = "window";
     sigmatch_table[DETECT_WINDOW].desc = "check for a specific TCP window size";
     sigmatch_table[DETECT_WINDOW].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#window";
     sigmatch_table[DETECT_WINDOW].Match = DetectWindowMatch;
@@ -80,7 +81,7 @@ void DetectWindowRegister (void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectWindowMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p,
+static int DetectWindowMatch(DetectEngineThreadCtx *det_ctx, Packet *p,
         const Signature *s, const SigMatchCtx *ctx)
 {
     const DetectWindowData *wd = (const DetectWindowData *)ctx;

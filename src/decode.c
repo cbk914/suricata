@@ -66,6 +66,7 @@
 #include "util-hash-string.h"
 #include "output.h"
 #include "output-flow.h"
+#include "flow-storage.h"
 
 extern bool stats_decoder_events;
 const char *stats_decoder_events_prefix;
@@ -401,16 +402,27 @@ void PacketBypassCallback(Packet *p)
 {
     /* Don't try to bypass if flow is already out or
      * if we have failed to do it once */
-    int state = SC_ATOMIC_GET(p->flow->flow_state);
-    if ((state == FLOW_STATE_LOCAL_BYPASSED) ||
-           (state == FLOW_STATE_CAPTURE_BYPASSED)) {
-        return;
+    if (p->flow) {
+        int state = SC_ATOMIC_GET(p->flow->flow_state);
+        if ((state == FLOW_STATE_LOCAL_BYPASSED) ||
+                (state == FLOW_STATE_CAPTURE_BYPASSED)) {
+            return;
+        }
+        FlowBypassInfo *fc = SCCalloc(sizeof(FlowBypassInfo), 1);
+        if (fc) {
+            FlowSetStorageById(p->flow, GetFlowBypassInfoID(), fc);
+        } else {
+            return;
+        }
     }
-
     if (p->BypassPacketsFlow && p->BypassPacketsFlow(p)) {
-        FlowUpdateState(p->flow, FLOW_STATE_CAPTURE_BYPASSED);
+        if (p->flow) {
+            FlowUpdateState(p->flow, FLOW_STATE_CAPTURE_BYPASSED);
+        }
     } else {
-        FlowUpdateState(p->flow, FLOW_STATE_LOCAL_BYPASSED);
+        if (p->flow) {
+            FlowUpdateState(p->flow, FLOW_STATE_LOCAL_BYPASSED);
+        }
     }
 }
 
@@ -472,6 +484,7 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
     dtv->counter_gre = StatsRegisterCounter("decoder.gre", tv);
     dtv->counter_vlan = StatsRegisterCounter("decoder.vlan", tv);
     dtv->counter_vlan_qinq = StatsRegisterCounter("decoder.vlan_qinq", tv);
+    dtv->counter_vxlan = StatsRegisterCounter("decoder.vxlan", tv);
     dtv->counter_ieee8021ah = StatsRegisterCounter("decoder.ieee8021ah", tv);
     dtv->counter_teredo = StatsRegisterCounter("decoder.teredo", tv);
     dtv->counter_ipv4inipv6 = StatsRegisterCounter("decoder.ipv4_in_ipv6", tv);
@@ -605,13 +618,6 @@ DecodeThreadVars *DecodeThreadVarsAlloc(ThreadVars *tv)
         return NULL;
     }
 
-    /** set config defaults */
-    int vlanbool = 0;
-    if ((ConfGetBool("vlan.use-for-tracking", &vlanbool)) == 1 && vlanbool == 0) {
-        dtv->vlan_disabled = 1;
-    }
-    SCLogDebug("vlan tracking is %s", dtv->vlan_disabled == 0 ? "enabled" : "disabled");
-
     return dtv;
 }
 
@@ -678,6 +684,9 @@ const char *PktSrcToString(enum PktSrcEnum pkt_src)
         case PKT_SRC_FFR:
             pkt_src_str = "stream (flow timeout)";
             break;
+        case PKT_SRC_DECODER_VXLAN:
+            pkt_src_str = "vxlan encapsulation";
+            break;
     }
     return pkt_src_str;
 }
@@ -706,6 +715,7 @@ void CaptureStatsSetup(ThreadVars *tv, CaptureStats *s)
 void DecodeGlobalConfig(void)
 {
     DecodeTeredoConfig();
+    DecodeVXLANConfig();
 }
 
 /**

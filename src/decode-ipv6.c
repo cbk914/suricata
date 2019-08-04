@@ -44,9 +44,6 @@
 #include "util-profiling.h"
 #include "host.h"
 
-#define IPV6_EXTHDRS     ip6eh.ip6_exthdrs
-#define IPV6_EH_CNT      ip6eh.ip6_exthdrs_cnt
-
 /**
  * \brief Function to decode IPv4 in IPv6 packets
  *
@@ -162,6 +159,8 @@ DecodeIPV6ExtHdrs(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt
 
     while(1)
     {
+        IPV6_SET_EXTHDRS_LEN(p, (len - plen));
+
         if (nh == IPPROTO_NONE) {
             if (plen > 0) {
                 /* No upper layer, but we do have data. Suspicious. */
@@ -201,7 +200,7 @@ DecodeIPV6ExtHdrs(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt
                 IPV6_SET_L4PROTO(p,nh);
                 hdrextlen = 8 + (*(pkt+1) * 8);  /* 8 bytes + length in 8 octet units */
 
-                SCLogDebug("hdrextlen %"PRIu8, hdrextlen);
+                SCLogDebug("hdrextlen %"PRIu16, hdrextlen);
 
                 if (hdrextlen > plen) {
                     ENGINE_SET_INVALID_EVENT(p, IPV6_TRUNC_EXTHDR);
@@ -494,7 +493,7 @@ DecodeIPV6ExtHdrs(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt
                 if (*(pkt+1) > 0)
                     hdrextlen += ((*(pkt+1) - 1) * 4);
 
-                SCLogDebug("hdrextlen %"PRIu8, hdrextlen);
+                SCLogDebug("hdrextlen %"PRIu16, hdrextlen);
 
                 if (hdrextlen > plen) {
                     ENGINE_SET_INVALID_EVENT(p, IPV6_TRUNC_EXTHDR);
@@ -562,7 +561,7 @@ static int DecodeIPV6Packet (ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, u
     }
 
     if (unlikely(IP_GET_RAW_VER(pkt) != 6)) {
-        SCLogDebug("wrong ip version %" PRIu8 "",IP_GET_RAW_VER(pkt));
+        SCLogDebug("wrong ip version %d",IP_GET_RAW_VER(pkt));
         ENGINE_SET_INVALID_EVENT(p, IPV6_WRONG_IP_VER);
         return -1;
     }
@@ -583,12 +582,10 @@ static int DecodeIPV6Packet (ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, u
 
 int DecodeIPV6(ThreadVars *tv, DecodeThreadVars *dtv, Packet *p, uint8_t *pkt, uint16_t len, PacketQueue *pq)
 {
-    int ret;
-
     StatsIncr(tv, dtv->counter_ipv6);
 
     /* do the actual decoding */
-    ret = DecodeIPV6Packet (tv, dtv, p, pkt, len);
+    int ret = DecodeIPV6Packet (tv, dtv, p, pkt, len);
     if (unlikely(ret < 0)) {
         p->ip6h = NULL;
         return TM_ECODE_FAILED;

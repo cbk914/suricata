@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2018 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -15,19 +15,16 @@
  * 02110-1301, USA.
  */
 
-#ifndef __DETECT_WINDOW_H__
-#define __DETECT_WINDOW_H__
+/**
+ * \file
+ *
+ * \author Mats Klepsland <mats.klepsland@gmail.com>
+ */
 
-#define MIN_WINDOW_VALUE 0
-#define MAX_WINDOW_VALUE 65535
+#ifndef __DETECT_TLS_JA3S_STRING_H__
+#define __DETECT_TLS_JA3S_STRING_H__
 
-typedef struct DetectWindowData_ {
-    uint8_t negated;	/** negated? 1=True : 0=False */
-    uint16_t size;     /** window size to match */
-} DetectWindowData;
+/* Prototypes */
+void DetectTlsJa3SStringRegister(void);
 
-/* prototypes */
-void DetectWindowRegister (void);
-
-#endif /* __DETECT_WINDOW_H__ */
-
+#endif /* __DETECT_TLS_JA3S_STRING_H__ */

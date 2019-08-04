@@ -1032,6 +1032,10 @@ static inline int SigParseList(char **input, char *output,
             }
         }
     }
+    if (i == len) {
+        *input = NULL;
+        return 0;
+    }
     (*input)[i] = '\0';
     strlcpy(output, *input, output_size);
     *input = *input + i + 1;
@@ -1074,7 +1078,7 @@ static int SigParseBasics(DetectEngineCtx *de_ctx,
 
     /* Options. */
     if (index == NULL) {
-        fprintf(stderr, "no rule options.\n");
+        SCLogError(SC_ERR_INVALID_RULE_ARGUMENT, "no rule options.");
         goto error;
     }
     while (isspace(*index) || *index == '(') {

@@ -48,7 +48,7 @@
 
 #define MAX_ALPROTO_NAME 50
 
-static int DetectAppLayerEventPktMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectAppLayerEventPktMatch(DetectEngineThreadCtx *det_ctx,
                                        Packet *p, const Signature *s, const SigMatchCtx *ctx);
 static int DetectAppLayerEventSetupP1(DetectEngineCtx *, Signature *, const char *);
 static void DetectAppLayerEventRegisterTests(void);
@@ -95,7 +95,7 @@ static int DetectEngineAptEventInspect(ThreadVars *tv,
     DetectAppLayerEventData *aled = NULL;
 
     alproto = f->alproto;
-    decoder_events = AppLayerParserGetEventsByTx(f->proto, alproto, alstate, tx_id);
+    decoder_events = AppLayerParserGetEventsByTx(f->proto, alproto, tx);
     if (decoder_events == NULL)
         goto end;
 
@@ -133,7 +133,7 @@ static int DetectEngineAptEventInspect(ThreadVars *tv,
 }
 
 
-static int DetectAppLayerEventPktMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectAppLayerEventPktMatch(DetectEngineThreadCtx *det_ctx,
                                 Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     const DetectAppLayerEventData *aled = (const DetectAppLayerEventData *)ctx;
@@ -349,14 +349,28 @@ static void DetectAppLayerEventFree(void *ptr)
 int DetectAppLayerEventPrepare(Signature *s)
 {
     SigMatch *sm = s->init_data->smlists[g_applayer_events_list_id];
+    SigMatch *smn;
     s->init_data->smlists[g_applayer_events_list_id] = NULL;
     s->init_data->smlists_tail[g_applayer_events_list_id] = NULL;
 
     while (sm != NULL) {
+        // save it for later use in loop
+        smn = sm->next;
+        /* these will be overwritten in SigMatchAppendSMToList
+         * called by DetectAppLayerEventSetupP2
+         */
         sm->next = sm->prev = NULL;
-        if (DetectAppLayerEventSetupP2(s, sm) < 0)
+        if (DetectAppLayerEventSetupP2(s, sm) < 0) {
+            // current one was freed, let's free the next ones
+            sm = smn;
+            while(sm) {
+                smn = sm->next;
+                SigMatchFree(sm);
+                sm = smn;
+            }
             return -1;
-        sm = sm->next;
+        }
+        sm = smn;
     }
 
     return 0;
@@ -564,7 +578,8 @@ static int DetectAppLayerEventTest03(void)
     StreamTcpUTInit(&ra_ctx);
 
     p->flowflags = FLOW_PKT_TOSERVER;
-    FAIL_IF(AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_ts, buf_ts,
+    TcpStream *stream = &stream_ts;
+    FAIL_IF(AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_ts,
                              sizeof(buf_ts), STREAM_TOSERVER | STREAM_START) < 0);
 
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
@@ -572,7 +587,8 @@ static int DetectAppLayerEventTest03(void)
     FAIL_IF (PacketAlertCheck(p, 1));
 
     p->flowflags = FLOW_PKT_TOCLIENT;
-    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_tc, buf_tc,
+    stream = &stream_tc;
+    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_tc,
                               sizeof(buf_tc), STREAM_TOCLIENT | STREAM_START) < 0);
 
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
@@ -651,13 +667,15 @@ static int DetectAppLayerEventTest04(void)
     StreamTcpUTInit(&ra_ctx);
 
     p->flowflags = FLOW_PKT_TOSERVER;
-    FAIL_IF(AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_ts, buf_ts,
+    TcpStream *stream = &stream_ts;
+    FAIL_IF(AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_ts,
                               sizeof(buf_ts), STREAM_TOSERVER | STREAM_START) < 0);
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
     FAIL_IF (PacketAlertCheck(p, 1));
 
     p->flowflags = FLOW_PKT_TOCLIENT;
-    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_tc, buf_tc,
+    stream = &stream_tc;
+    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_tc,
                               sizeof(buf_tc), STREAM_TOCLIENT | STREAM_START) < 0);
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
     FAIL_IF (!PacketAlertCheck(p, 1));
@@ -750,13 +768,15 @@ static int DetectAppLayerEventTest05(void)
     StreamTcpUTInit(&ra_ctx);
 
     p->flowflags = FLOW_PKT_TOSERVER;
-    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_ts, buf_ts,
+    TcpStream *stream = &stream_ts;
+    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_ts,
                               sizeof(buf_ts), STREAM_TOSERVER | STREAM_START) < 0);
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
     FAIL_IF (PacketAlertCheck(p, 1));
 
     p->flowflags = FLOW_PKT_TOCLIENT;
-    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream_tc, buf_tc,
+    stream = &stream_tc;
+    FAIL_IF (AppLayerHandleTCPData(&tv, ra_ctx, p, f, &ssn, &stream, buf_tc,
                               sizeof(buf_tc), STREAM_TOCLIENT | STREAM_START) < 0);
     SigMatchSignatures(&tv, de_ctx, det_ctx, p);
     FAIL_IF (!PacketAlertCheck(p, 1));

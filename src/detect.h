@@ -62,7 +62,6 @@ struct SCSigOrderFunc_;
 struct SCSigSignatureWrapper_;
 
 /*
-
   The detection engine groups similar signatures/rules together. Internally a
   tree of different types of data is created on initialization. This is it's
   global layout:
@@ -71,18 +70,12 @@ struct SCSigSignatureWrapper_;
 
    - Flow direction
    -- Protocol
-   -=- Src address
-   -==- Dst address
-   -===- Src port
-   -====- Dst port
+   -=- Dst port
 
    For the other protocols
 
    - Flow direction
    -- Protocol
-   -=- Src address
-   -==- Dst address
-
 */
 
 /* holds the values for different possible lists in struct Signature.
@@ -153,14 +146,12 @@ typedef struct DetectAddress_ {
     struct DetectAddress_ *next;
 } DetectAddress;
 
-/** Signature grouping head. Here 'any', ipv4 and ipv6 are split out */
+/** Address grouping head. IPv4 and IPv6 are split out */
 typedef struct DetectAddressHead_ {
     DetectAddress *ipv4_head;
     DetectAddress *ipv6_head;
 } DetectAddressHead;
 
-
-#include "detect-threshold.h"
 
 typedef struct DetectMatchAddressIPv4_ {
     uint32_t ip;    /**< address in host order, start of range */
@@ -438,6 +429,36 @@ typedef struct DetectBufferType_ {
     DetectEngineTransforms transforms;
 } DetectBufferType;
 
+struct DetectEnginePktInspectionEngine;
+
+/**
+ *  \param alert_flags[out] for setting PACKET_ALERT_FLAG_*
+ */
+typedef int (*InspectionBufferPktInspectFunc)(
+        struct DetectEngineThreadCtx_ *,
+        const struct DetectEnginePktInspectionEngine *engine,
+        const struct Signature_ *s,
+        Packet *p, uint8_t *alert_flags);
+
+/** callback for getting the buffer we need to prefilter/inspect */
+typedef InspectionBuffer *(*InspectionBufferGetPktDataPtr)(
+        struct DetectEngineThreadCtx_ *det_ctx,
+        const DetectEngineTransforms *transforms,
+        Packet *p, const int list_id);
+
+typedef struct DetectEnginePktInspectionEngine {
+    SigMatchData *smd;
+    uint16_t mpm:1;
+    uint16_t sm_list:15;
+    struct {
+        InspectionBufferGetPktDataPtr GetData;
+        InspectionBufferPktInspectFunc Callback;
+        /** pointer to the transforms in the 'DetectBuffer entry for this list */
+        const DetectEngineTransforms *transforms;
+    } v1;
+    struct DetectEnginePktInspectionEngine *next;
+} DetectEnginePktInspectionEngine;
+
 #ifdef UNITTESTS
 #define sm_lists init_data->smlists
 #define sm_lists_tail init_data->smlists_tail
@@ -542,6 +563,7 @@ typedef struct Signature_ {
     IPOnlyCIDRItem *CidrSrc, *CidrDst;
 
     DetectEngineAppInspectionEngine *app_inspect;
+    DetectEnginePktInspectionEngine *pkt_inspect;
 
     /* Matching structures for the built-ins. The others are in
      * their inspect engines. */
@@ -567,39 +589,48 @@ typedef struct Signature_ {
     struct Signature_ *next;
 } Signature;
 
+enum DetectBufferMpmType {
+    DETECT_BUFFER_MPM_TYPE_PKT,
+    DETECT_BUFFER_MPM_TYPE_APP,
+    /* must be last */
+    DETECT_BUFFER_MPM_TYPE_SIZE,
+};
+
 /** \brief one time registration of keywords at start up */
-typedef struct DetectMpmAppLayerRegistery_ {
+typedef struct DetectBufferMpmRegistery_ {
     const char *name;
     char pname[32];             /**< name used in profiling */
     int direction;              /**< SIG_FLAG_TOSERVER or SIG_FLAG_TOCLIENT */
     int sm_list;
-
-    int (*PrefilterRegister)(struct DetectEngineCtx_ *de_ctx,
-            struct SigGroupHead_ *sgh, MpmCtx *mpm_ctx);
-
     int priority;
-
-    struct {
-        int (*PrefilterRegisterWithListId)(struct DetectEngineCtx_ *de_ctx,
-                struct SigGroupHead_ *sgh, MpmCtx *mpm_ctx,
-                const struct DetectMpmAppLayerRegistery_ *mpm_reg, int list_id);
-        InspectionBufferGetDataPtr GetData;
-        AppProto alproto;
-        int tx_min_progress;
-        DetectEngineTransforms transforms;
-    } v2;
-
     int id;                     /**< index into this array and result arrays */
+    enum DetectBufferMpmType type;
+    int sgh_mpm_context;
 
-    struct DetectMpmAppLayerRegistery_ *next;
-} DetectMpmAppLayerRegistery;
+    int (*PrefilterRegisterWithListId)(struct DetectEngineCtx_ *de_ctx,
+            struct SigGroupHead_ *sgh, MpmCtx *mpm_ctx,
+            const struct DetectBufferMpmRegistery_ *mpm_reg, int list_id);
+    DetectEngineTransforms transforms;
 
-/** \brief structure for storing per detect engine mpm keyword settings
- */
-typedef struct DetectMpmAppLayerKeyword_ {
-    const DetectMpmAppLayerRegistery *reg;
-    int32_t sgh_mpm_context;    /**< mpm factory id */
-} DetectMpmAppLayerKeyword;
+    union {
+        /* app-layer matching: use if type == DETECT_BUFFER_MPM_TYPE_APP */
+        struct {
+            InspectionBufferGetDataPtr GetData;
+            AppProto alproto;
+            int tx_min_progress;
+        } app_v2;
+
+        /* pkt matching: use if type == DETECT_BUFFER_MPM_TYPE_PKT */
+        struct {
+            int (*PrefilterRegisterWithListId)(struct DetectEngineCtx_ *de_ctx,
+                    struct SigGroupHead_ *sgh, MpmCtx *mpm_ctx,
+                    const struct DetectBufferMpmRegistery_ *mpm_reg, int list_id);
+            InspectionBufferGetPktDataPtr GetData;
+        } pkt_v1;
+    };
+
+    struct DetectBufferMpmRegistery_ *next;
+} DetectBufferMpmRegistery;
 
 typedef struct DetectReplaceList_ {
     struct DetectContentData_ *cd;
@@ -664,12 +695,7 @@ typedef struct DetectEngineLookupFlow_ {
     struct SigGroupHead_ *sgh[256];
 } DetectEngineLookupFlow;
 
-/* Flow status
- *
- * to server
- * to client
- */
-#define FLOW_STATES 2
+#include "detect-threshold.h"
 
 /** \brief threshold ctx */
 typedef struct ThresholdCtx_    {
@@ -719,6 +745,12 @@ enum DetectEngineType
     DETECT_ENGINE_TYPE_MT_STUB = 2, /* multi-tenant stub: cannot be reloaded */
     DETECT_ENGINE_TYPE_TENANT = 3,
 };
+
+/* Flow states:
+ *  toserver
+ *  toclient
+ */
+#define FLOW_STATES 2
 
 /** \brief main detection engine ctx */
 typedef struct DetectEngineCtx_ {
@@ -887,16 +919,14 @@ typedef struct DetectEngineCtx_ {
     /* list with app inspect engines. Both the start-time registered ones and
      * the rule-time registered ones. */
     DetectEngineAppInspectionEngine *app_inspect_engines;
-    DetectMpmAppLayerRegistery *app_mpms_list;
+    DetectBufferMpmRegistery *app_mpms_list;
     uint32_t app_mpms_list_cnt;
+    DetectEnginePktInspectionEngine *pkt_inspect_engines;
+    DetectBufferMpmRegistery *pkt_mpms_list;
+    uint32_t pkt_mpms_list_cnt;
 
     uint32_t prefilter_id;
     HashListTable *prefilter_hash_table;
-
-    /** table with mpms and their registration function
-     *  \todo we only need this at init, so perhaps this
-     *        can move to a DetectEngineCtx 'init' struct */
-    DetectMpmAppLayerKeyword *app_mpms;
 
     /** time of last ruleset reload */
     struct timeval last_reload;
@@ -1130,16 +1160,15 @@ typedef struct DetectEngineThreadCtx_ {
  */
 typedef struct SigTableElmt_ {
     /** Packet match function pointer */
-    int (*Match)(ThreadVars *, DetectEngineThreadCtx *, Packet *, const Signature *, const SigMatchCtx *);
+    int (*Match)(DetectEngineThreadCtx *, Packet *, const Signature *, const SigMatchCtx *);
 
     /** AppLayer TX match function pointer */
-    int (*AppLayerTxMatch)(ThreadVars *, DetectEngineThreadCtx *, Flow *,
+    int (*AppLayerTxMatch)(DetectEngineThreadCtx *, Flow *,
             uint8_t flags, void *alstate, void *txv,
             const Signature *, const SigMatchCtx *);
 
     /** File match function  pointer */
-    int (*FileMatch)(ThreadVars *,  /**< thread local vars */
-        DetectEngineThreadCtx *,
+    int (*FileMatch)(DetectEngineThreadCtx *,
         Flow *,                     /**< *LOCKED* flow */
         uint8_t flags, File *, const Signature *, const SigMatchCtx *);
 
@@ -1286,6 +1315,7 @@ typedef struct SigGroupHeadInitData_ {
     int whitelist;          /**< try to make this group a unique one */
 
     MpmCtx **app_mpms;
+    MpmCtx **pkt_mpms;
 
     PrefilterEngineList *pkt_engines;
     PrefilterEngineList *payload_engines;

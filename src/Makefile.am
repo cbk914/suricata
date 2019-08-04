@@ -40,6 +40,7 @@ app-layer-parser.c app-layer-parser.h \
 app-layer-protos.c app-layer-protos.h \
 app-layer-smb.c app-layer-smb.h \
 app-layer-smtp.c app-layer-smtp.h \
+app-layer-snmp.c app-layer-snmp.h \
 app-layer-nfs-tcp.c app-layer-nfs-tcp.h \
 app-layer-nfs-udp.c app-layer-nfs-udp.h \
 app-layer-ntp.c app-layer-ntp.h \
@@ -75,6 +76,7 @@ decode-tcp.c decode-tcp.h \
 decode-teredo.c decode-teredo.h \
 decode-udp.c decode-udp.h \
 decode-vlan.c decode-vlan.h \
+decode-vxlan.c decode-vxlan.h \
 decode-mpls.c decode-mpls.h \
 decode-template.c decode-template.h \
 defrag-config.c defrag-config.h \
@@ -82,7 +84,6 @@ defrag.c defrag.h \
 defrag-hash.c defrag-hash.h \
 defrag-queue.c defrag-queue.h \
 defrag-timeout.c defrag-timeout.h \
-detect-ack.c detect-ack.h \
 detect-app-layer-event.c detect-app-layer-event.h \
 detect-app-layer-protocol.c detect-app-layer-protocol.h \
 detect-asn1.c detect-asn1.h \
@@ -107,11 +108,14 @@ detect-dnp3.c detect-dnp3.h \
 detect-dns-query.c detect-dns-query.h \
 detect-tls-ja3-hash.c detect-tls-ja3-hash.h \
 detect-tls-ja3-string.c detect-tls-ja3-string.h \
+detect-tls-ja3s-hash.c detect-tls-ja3s-hash.h \
+detect-tls-ja3s-string.c detect-tls-ja3s-string.h \
 detect-tls-sni.c detect-tls-sni.h \
 detect-tls-cert-issuer.c detect-tls-cert-issuer.h \
 detect-tls-cert-subject.c detect-tls-cert-subject.h \
 detect-tls-cert-serial.c detect-tls-cert-serial.h \
 detect-tls-cert-fingerprint.c detect-tls-cert-fingerprint.h \
+detect-tls-certs.c detect-tls-certs.h \
 detect-dsize.c detect-dsize.h \
 detect-engine.c detect-engine.h \
 detect-engine-address.c detect-engine-address.h \
@@ -153,7 +157,6 @@ detect-filesha256.c detect-filesha256.h \
 detect-filename.c detect-filename.h \
 detect-filesize.c detect-filesize.h \
 detect-filestore.c detect-filestore.h \
-detect-flags.c detect-flags.h \
 detect-flowbits.c detect-flowbits.h \
 detect-flow.c detect-flow.h \
 detect-flowint.c detect-flowint.h \
@@ -198,6 +201,8 @@ detect-id.c detect-id.h \
 detect-ipopts.c detect-ipopts.h \
 detect-ipproto.c detect-ipproto.h \
 detect-iprep.c detect-iprep.h \
+detect-ipv4hdr.c detect-ipv4hdr.h \
+detect-ipv6hdr.c detect-ipv6hdr.h \
 detect-isdataat.c detect-isdataat.h \
 detect-itype.c detect-itype.h \
 detect-krb5-cname.c detect-krb5-cname.h \
@@ -227,8 +232,10 @@ detect-replace.c detect-replace.h \
 detect-rev.c detect-rev.h \
 detect-rpc.c detect-rpc.h \
 detect-sameip.c detect-sameip.h \
-detect-seq.c detect-seq.h \
 detect-sid.c detect-sid.h \
+detect-snmp-community.c detect-snmp-community.h \
+detect-snmp-pdu_type.c detect-snmp-pdu_type.h \
+detect-snmp-version.c detect-snmp-version.h \
 detect-ssh-proto.c detect-ssh-proto.h \
 detect-ssh-proto-version.c detect-ssh-proto-version.h \
 detect-ssh-software.c detect-ssh-software.h \
@@ -239,6 +246,13 @@ detect-ssl-version.c detect-ssl-version.h \
 detect-stream_size.c detect-stream_size.h \
 detect-tag.c detect-tag.h \
 detect-target.c detect-target.h \
+detect-tcp-ack.c detect-tcp-ack.h \
+detect-tcp-flags.c detect-tcp-flags.h \
+detect-tcp-seq.c detect-tcp-seq.h \
+detect-tcp-window.c detect-tcp-window.h \
+detect-tcphdr.c detect-tcphdr.h \
+detect-udphdr.c detect-udphdr.h \
+detect-tcpmss.c detect-tcpmss.h \
 detect-template.c detect-template.h \
 detect-template2.c detect-template2.h \
 detect-ftpdata.c detect-ftpdata.h \
@@ -257,7 +271,6 @@ detect-transform-sha256.c detect-transform-sha256.h \
 detect-ttl.c detect-ttl.h \
 detect-uricontent.c detect-uricontent.h \
 detect-urilen.c detect-urilen.h \
-detect-window.c detect-window.h \
 detect-within.c detect-within.h \
 detect-modbus.c detect-modbus.h \
 detect-xbits.c detect-xbits.h \
@@ -307,6 +320,7 @@ output-json-drop.c output-json-drop.h \
 output-json-email-common.c output-json-email-common.h \
 output-json-file.c output-json-file.h \
 output-json-flow.c output-json-flow.h \
+output-json-ftp.c output-json-ftp.h \
 output-json-netflow.c output-json-netflow.h \
 output-json-http.c output-json-http.h \
 output-json-smtp.c output-json-smtp.h \
@@ -319,6 +333,7 @@ output-json-smb.c output-json-smb.h \
 output-json-ikev2.c output-json-ikev2.h \
 output-json-krb5.c output-json-krb5.h \
 output-json-dhcp.c output-json-dhcp.h \
+output-json-snmp.c output-json-snmp.h \
 output-json-template.c output-json-template.h \
 output-json-template-rust.c output-json-template-rust.h \
 output-json-metadata.c output-json-metadata.h \

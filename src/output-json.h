@@ -42,6 +42,9 @@ enum OutputJsonLogDirection {
     LOG_DIR_FLOW_TOSERVER,
 };
 
+/* Suggested output buffer size */
+#define JSON_OUTPUT_BUFFER_SIZE 65535
+
 /* helper struct for OutputJSONMemBufferCallback */
 typedef struct OutputJSONMemBufferWrapper_ {
     MemBuffer **buffer; /**< buffer to use & expand as needed */
@@ -88,6 +91,7 @@ typedef struct OutputJsonThreadCtx_ {
 
 json_t *SCJsonBool(int val);
 json_t *SCJsonString(const char *val);
+json_t *JsonAddStringN(const char *string, size_t size);
 void SCJsonDecref(json_t *js);
 
 void JsonAddCommonOptions(const OutputJsonCommonSettings *cfg,

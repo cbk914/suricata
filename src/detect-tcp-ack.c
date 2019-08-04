@@ -35,7 +35,7 @@
 #include "detect-engine-prefilter.h"
 #include "detect-engine-prefilter-common.h"
 
-#include "detect-ack.h"
+#include "detect-tcp-ack.h"
 
 #include "util-byte.h"
 #include "util-unittest.h"
@@ -44,7 +44,7 @@
 
 /* prototypes */
 static int DetectAckSetup(DetectEngineCtx *, Signature *, const char *);
-static int DetectAckMatch(ThreadVars *, DetectEngineThreadCtx *,
+static int DetectAckMatch(DetectEngineThreadCtx *,
                           Packet *, const Signature *, const SigMatchCtx *);
 static void DetectAckRegisterTests(void);
 static void DetectAckFree(void *);
@@ -53,7 +53,8 @@ static _Bool PrefilterTcpAckIsPrefilterable(const Signature *s);
 
 void DetectAckRegister(void)
 {
-    sigmatch_table[DETECT_ACK].name = "ack";
+    sigmatch_table[DETECT_ACK].name = "tcp.ack";
+    sigmatch_table[DETECT_ACK].alias = "ack";
     sigmatch_table[DETECT_ACK].desc = "check for a specific TCP acknowledgement number";
     sigmatch_table[DETECT_ACK].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#ack";
     sigmatch_table[DETECT_ACK].Match = DetectAckMatch;
@@ -78,7 +79,7 @@ void DetectAckRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectAckMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectAckMatch(DetectEngineThreadCtx *det_ctx,
                           Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     const DetectAckData *data = (const DetectAckData *)ctx;
@@ -334,4 +335,3 @@ static void DetectAckRegisterTests(void)
     UtRegisterTest("DetectAckSigTest01", DetectAckSigTest01);
 #endif /* UNITTESTS */
 }
-

@@ -298,7 +298,7 @@ static int TCPProtoDetectTriggerOpposingSide(ThreadVars *tv,
 /** \todo data const */
 static int TCPProtoDetect(ThreadVars *tv,
         TcpReassemblyThreadCtx *ra_ctx, AppLayerThreadCtx *app_tctx,
-        Packet *p, Flow *f, TcpSession *ssn, TcpStream *stream,
+        Packet *p, Flow *f, TcpSession *ssn, TcpStream **stream,
         uint8_t *data, uint32_t data_len, uint8_t flags)
 {
     AppProto *alproto;
@@ -351,7 +351,7 @@ static int TCPProtoDetect(ThreadVars *tv,
             f->alproto = *alproto;
         }
 
-        StreamTcpSetStreamFlagAppProtoDetectionCompleted(stream);
+        StreamTcpSetStreamFlagAppProtoDetectionCompleted(*stream);
         TcpSessionSetReassemblyDepth(ssn,
                 AppLayerParserGetStreamDepth(f));
         FlagPacketFlow(p, f, flags);
@@ -363,6 +363,11 @@ static int TCPProtoDetect(ThreadVars *tv,
             PacketSwap(p);
             FlowSwap(f);
             SWAP_FLAGS(flags, STREAM_TOSERVER, STREAM_TOCLIENT);
+            if (*stream == &ssn->client) {
+                *stream = &ssn->server;
+            } else {
+                *stream = &ssn->client;
+            }
         }
 
         /* account flow if we have both sides */
@@ -384,7 +389,7 @@ static int TCPProtoDetect(ThreadVars *tv,
                     AppProtoToString(*alproto));
 
             if (TCPProtoDetectTriggerOpposingSide(tv, ra_ctx,
-                        p, ssn, stream) != 0)
+                        p, ssn, *stream) != 0)
             {
                 DisableAppLayer(tv, f, p);
                 goto failure;
@@ -426,7 +431,7 @@ static int TCPProtoDetect(ThreadVars *tv,
              * to the app layer. */
             if (first_data_dir && !(first_data_dir & flags)) {
                 FlowCleanupAppLayer(f);
-                StreamTcpResetStreamFlagAppProtoDetectionCompleted(stream);
+                StreamTcpResetStreamFlagAppProtoDetectionCompleted(*stream);
                 FLOW_RESET_PP_DONE(f, flags);
                 FLOW_RESET_PM_DONE(f, flags);
                 FLOW_RESET_PE_DONE(f, flags);
@@ -444,6 +449,7 @@ static int TCPProtoDetect(ThreadVars *tv,
         PACKET_PROFILING_APP_END(app_tctx, f->alproto);
         if (r < 0)
             goto failure;
+        (*stream)->app_progress_rel += data_len;
 
     } else {
         /* if the ssn is midstream, we may end up with a case where the
@@ -513,6 +519,9 @@ static int TCPProtoDetect(ThreadVars *tv,
                             f->alproto, flags,
                             data, data_len);
                     PACKET_PROFILING_APP_END(app_tctx, f->alproto);
+                    if (r >= 0) {
+                        (*stream)->app_progress_rel += data_len;
+                    }
 
                     AppLayerDecoderEventsSetEventRaw(&p->app_layer_events,
                             APPLAYER_DETECT_PROTOCOL_ONLY_ONE_DIRECTION);
@@ -526,7 +535,7 @@ static int TCPProtoDetect(ThreadVars *tv,
                         goto failure;
                 }
                 *alproto = ALPROTO_FAILED;
-                StreamTcpSetStreamFlagAppProtoDetectionCompleted(stream);
+                StreamTcpSetStreamFlagAppProtoDetectionCompleted(*stream);
                 AppLayerIncFlowCounter(tv, f);
                 FlagPacketFlow(p, f, flags);
 
@@ -547,10 +556,13 @@ failure:
  *
  *  First run protocol detection and then when the protocol is known invoke
  *  the app layer parser.
+ *
+ *  \param stream ptr-to-ptr to stream object. Might change if flow dir is
+ *                reversed.
  */
 int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                           Packet *p, Flow *f,
-                          TcpSession *ssn, TcpStream *stream,
+                          TcpSession *ssn, TcpStream **stream,
                           uint8_t *data, uint32_t data_len,
                           uint8_t flags)
 {
@@ -578,17 +590,19 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
      * app-layer if known. */
     if (flags & STREAM_GAP) {
         if (alproto == ALPROTO_UNKNOWN) {
-            StreamTcpSetStreamFlagAppProtoDetectionCompleted(stream);
+            StreamTcpSetStreamFlagAppProtoDetectionCompleted(*stream);
             SCLogDebug("ALPROTO_UNKNOWN flow %p, due to GAP in stream start", f);
             /* if the other side didn't already find the proto, we're done */
-            if (f->alproto == ALPROTO_UNKNOWN)
-                goto end;
-
+            if (f->alproto == ALPROTO_UNKNOWN) {
+                goto failure;
+            }
         }
         PACKET_PROFILING_APP_START(app_tctx, f->alproto);
         r = AppLayerParserParse(tv, app_tctx->alp_tctx, f, f->alproto,
                 flags, data, data_len);
         PACKET_PROFILING_APP_END(app_tctx, f->alproto);
+        /* ignore parser result for gap */
+        (*stream)->app_progress_rel += data_len;
         goto end;
     }
 
@@ -646,6 +660,9 @@ int AppLayerHandleTCPData(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
             r = AppLayerParserParse(tv, app_tctx->alp_tctx, f, f->alproto,
                                     flags, data, data_len);
             PACKET_PROFILING_APP_END(app_tctx, f->alproto);
+            if (r >= 0) {
+                (*stream)->app_progress_rel += data_len;
+            }
         }
     }
 
@@ -886,20 +903,16 @@ void AppLayerSetupCounters()
                     snprintf(applayer_counter_names[ipproto_map][alproto].name,
                             sizeof(applayer_counter_names[ipproto_map][alproto].name),
                             "%s%s%s", str, alproto_str, ipproto_suffix);
-                    if (AppLayerParserProtocolIsTxAware(ipprotos[ipproto], alproto)) {
-                        snprintf(applayer_counter_names[ipproto_map][alproto].tx_name,
-                                sizeof(applayer_counter_names[ipproto_map][alproto].tx_name),
-                                "%s%s%s", tx_str, alproto_str, ipproto_suffix);
-                    }
+                    snprintf(applayer_counter_names[ipproto_map][alproto].tx_name,
+                            sizeof(applayer_counter_names[ipproto_map][alproto].tx_name),
+                            "%s%s%s", tx_str, alproto_str, ipproto_suffix);
                 } else {
                     snprintf(applayer_counter_names[ipproto_map][alproto].name,
                             sizeof(applayer_counter_names[ipproto_map][alproto].name),
                             "%s%s", str, alproto_str);
-                    if (AppLayerParserProtocolIsTxAware(ipprotos[ipproto], alproto)) {
-                        snprintf(applayer_counter_names[ipproto_map][alproto].tx_name,
-                                sizeof(applayer_counter_names[ipproto_map][alproto].tx_name),
-                                "%s%s", tx_str, alproto_str);
-                    }
+                    snprintf(applayer_counter_names[ipproto_map][alproto].tx_name,
+                            sizeof(applayer_counter_names[ipproto_map][alproto].tx_name),
+                            "%s%s", tx_str, alproto_str);
                 }
             } else if (alproto == ALPROTO_FAILED) {
                 snprintf(applayer_counter_names[ipproto_map][alproto].name,
@@ -927,10 +940,8 @@ void AppLayerRegisterThreadCounters(ThreadVars *tv)
                 applayer_counters[ipproto_map][alproto].counter_id =
                     StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].name, tv);
 
-                if (AppLayerParserProtocolIsTxAware(ipprotos[ipproto], alproto)) {
-                    applayer_counters[ipproto_map][alproto].counter_tx_id =
-                        StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].tx_name, tv);
-                }
+                applayer_counters[ipproto_map][alproto].counter_tx_id =
+                    StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].tx_name, tv);
             } else if (alproto == ALPROTO_FAILED) {
                 applayer_counters[ipproto_map][alproto].counter_id =
                     StatsRegisterCounter(applayer_counter_names[ipproto_map][alproto].name, tv);

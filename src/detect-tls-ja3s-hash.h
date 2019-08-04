@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2018 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -18,23 +18,13 @@
 /**
  * \file
  *
- * \author Brian Rectanus <brectanu@gmail.com>
+ * \author Mats Klepsland <mats.klepsland@gmail.com>
  */
 
-#ifndef __DETECT_SEQ_H__
-#define __DETECT_SEQ_H__
+#ifndef __DETECT_TLS_JA3S_HASH_H__
+#define __DETECT_TLS_JA3S_HASH_H__
 
-/**
- * \brief seq data
- */
-typedef struct DetectSeqData_ {
-    uint32_t seq;                    /**< seq to match */
-} DetectSeqData;
+/* Prototypes */
+void DetectTlsJa3SHashRegister(void);
 
-/**
- * \brief Registration function for ack: keyword
- */
-void DetectSeqRegister(void);
-
-#endif /* __DETECT_SEQ_H__ */
-
+#endif /* __DETECT_TLS_JA3S_HASH_H__ */

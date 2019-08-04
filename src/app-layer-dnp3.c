@@ -1309,23 +1309,9 @@ error:
     SCReturnInt(-1);
 }
 
-static AppLayerDecoderEvents *DNP3GetEvents(void *state, uint64_t tx_id)
+static AppLayerDecoderEvents *DNP3GetEvents(void *tx)
 {
-    DNP3State *dnp3 = state;
-    DNP3Transaction *tx;
-    uint64_t tx_num = tx_id + 1;
-
-    if (dnp3->curr && dnp3->curr->tx_num == tx_num) {
-        return dnp3->curr->decoder_events;
-    }
-
-    TAILQ_FOREACH(tx, &dnp3->tx_list, next) {
-        if (tx->tx_num == tx_num) {
-            return tx->decoder_events;
-        }
-    }
-
-    return NULL;
+    return ((DNP3Transaction *) tx)->decoder_events;
 }
 
 static void *DNP3GetTx(void *alstate, uint64_t tx_id)
@@ -1522,6 +1508,24 @@ static int DNP3StateGetEventInfo(const char *event_name, int *event_id,
 /**
  * \brief App-layer support.
  */
+static int DNP3StateGetEventInfoById(int event_id, const char **event_name,
+                                     AppLayerEventType *event_type)
+{
+    *event_name = SCMapEnumValueToName(event_id, dnp3_decoder_event_table);
+    if (*event_name == NULL) {
+        SCLogError(SC_ERR_INVALID_ENUM_MAP, "Event \"%d\" not present in "
+            "the DNP3 enum event map table.", event_id);
+        return -1;
+    }
+
+    *event_type = APP_LAYER_EVENT_TYPE_TRANSACTION;
+
+    return 0;
+}
+
+/**
+ * \brief App-layer support.
+ */
 static DetectEngineState *DNP3GetTxDetectState(void *vtx)
 {
     DNP3Transaction *tx = vtx;
@@ -1654,6 +1658,8 @@ void RegisterDNP3Parsers(void)
 
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_DNP3,
             DNP3StateGetEventInfo);
+        AppLayerParserRegisterGetEventInfoById(IPPROTO_TCP, ALPROTO_DNP3,
+            DNP3StateGetEventInfoById);
 
         AppLayerParserRegisterLoggerFuncs(IPPROTO_TCP, ALPROTO_DNP3,
             DNP3GetTxLogged, DNP3SetTxLogged);

@@ -33,7 +33,7 @@
 #include "detect-engine-prefilter.h"
 #include "detect-engine-prefilter-common.h"
 
-#include "detect-seq.h"
+#include "detect-tcp-seq.h"
 
 #include "util-byte.h"
 #include "util-unittest.h"
@@ -41,7 +41,7 @@
 #include "util-debug.h"
 
 static int DetectSeqSetup(DetectEngineCtx *, Signature *, const char *);
-static int DetectSeqMatch(ThreadVars *, DetectEngineThreadCtx *,
+static int DetectSeqMatch(DetectEngineThreadCtx *,
                           Packet *, const Signature *, const SigMatchCtx *);
 static void DetectSeqRegisterTests(void);
 static void DetectSeqFree(void *);
@@ -50,7 +50,8 @@ static _Bool PrefilterTcpSeqIsPrefilterable(const Signature *s);
 
 void DetectSeqRegister(void)
 {
-    sigmatch_table[DETECT_SEQ].name = "seq";
+    sigmatch_table[DETECT_SEQ].name = "tcp.seq";
+    sigmatch_table[DETECT_SEQ].alias = "seq";
     sigmatch_table[DETECT_SEQ].desc = "check for a specific TCP sequence number";
     sigmatch_table[DETECT_SEQ].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#seq";
     sigmatch_table[DETECT_SEQ].Match = DetectSeqMatch;
@@ -74,7 +75,7 @@ void DetectSeqRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectSeqMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectSeqMatch(DetectEngineThreadCtx *det_ctx,
                           Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     const DetectSeqData *data = (const DetectSeqData *)ctx;
@@ -299,4 +300,3 @@ static void DetectSeqRegisterTests(void)
     UtRegisterTest("DetectSeqSigTest02", DetectSeqSigTest02);
 #endif /* UNITTESTS */
 }
-

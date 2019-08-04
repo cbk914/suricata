@@ -78,7 +78,7 @@ void DetectFilemagicRegister(void)
 
 #else /* HAVE_MAGIC */
 
-static int DetectFilemagicMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectFilemagicMatch (DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, const Signature *, const SigMatchCtx *);
 static int DetectFilemagicSetup (DetectEngineCtx *, Signature *, const char *);
 static void DetectFilemagicRegisterTests(void);
@@ -90,7 +90,7 @@ static int g_file_magic_buffer_id = 0;
 
 static int PrefilterMpmFilemagicRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id);
+        const DetectBufferMpmRegistery *mpm_reg, int list_id);
 static int DetectEngineInspectFilemagic(
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const DetectEngineAppInspectionEngine *engine,
@@ -231,7 +231,7 @@ static int FilemagicThreadLookup(magic_t *ctx, File *file)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectFilemagicMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectFilemagicMatch (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, File *file, const Signature *s, const SigMatchCtx *m)
 {
     SCEnter();
@@ -626,17 +626,17 @@ static void PrefilterMpmFilemagicFree(void *ptr)
 
 static int PrefilterMpmFilemagicRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     PrefilterMpmFilemagic *pectx = SCCalloc(1, sizeof(*pectx));
     if (pectx == NULL)
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     return PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxFilemagic,
-            mpm_reg->v2.alproto, mpm_reg->v2.tx_min_progress,
+            mpm_reg->app_v2.alproto, mpm_reg->app_v2.tx_min_progress,
             pectx, PrefilterMpmFilemagicFree, mpm_reg->pname);
 }
 #ifdef UNITTESTS /* UNITTESTS */

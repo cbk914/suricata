@@ -15,8 +15,6 @@
  * 02110-1301, USA.
  */
 
-extern crate libc;
-
 use std;
 use std::string::String;
 use std::collections::HashMap;
@@ -560,8 +558,8 @@ fn dns_log_json_answer(response: &DNSResponse, flags: u64) -> Json
 
 #[no_mangle]
 pub extern "C" fn rs_dns_log_json_query(tx: &mut DNSTransaction,
-                                        i: libc::uint16_t,
-                                        flags: libc::uint64_t)
+                                        i: u16,
+                                        flags: u64)
                                         -> *mut JsonT
 {
     let index = i as usize;
@@ -585,7 +583,7 @@ pub extern "C" fn rs_dns_log_json_query(tx: &mut DNSTransaction,
 
 #[no_mangle]
 pub extern "C" fn rs_dns_log_json_answer(tx: &mut DNSTransaction,
-                                         flags: libc::uint64_t)
+                                         flags: u64)
                                          -> *mut JsonT
 {
     if let &Some(ref response) = &tx.response {
@@ -675,8 +673,8 @@ fn dns_log_json_failure_v1(r: &DNSResponse, index: usize, flags: u64)
 
 #[no_mangle]
 pub extern "C" fn rs_dns_log_json_answer_v1(tx: &mut DNSTransaction,
-                                         i: libc::uint16_t,
-                                         flags: libc::uint64_t)
+                                         i: u16,
+                                         flags: u64)
                                          -> *mut JsonT
 {
     let index = i as usize;
@@ -703,8 +701,8 @@ pub extern "C" fn rs_dns_log_json_answer_v1(tx: &mut DNSTransaction,
 
 #[no_mangle]
 pub extern "C" fn rs_dns_log_json_authority_v1(tx: &mut DNSTransaction,
-                                            i: libc::uint16_t,
-                                            flags: libc::uint64_t)
+                                            i: u16,
+                                            flags: u64)
                                             -> *mut JsonT
 {
     let index = i as usize;

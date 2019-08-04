@@ -60,7 +60,7 @@
 static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
-static int DetectBytejumpMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectBytejumpMatch(DetectEngineThreadCtx *det_ctx,
                         Packet *p, const Signature *s, const SigMatchCtx *ctx);
 static DetectBytejumpData *DetectBytejumpParse(const char *optstr, char **offset);
 static int DetectBytejumpSetup(DetectEngineCtx *de_ctx, Signature *s, const char *optstr);
@@ -199,7 +199,7 @@ int DetectBytejumpDoMatch(DetectEngineThreadCtx *det_ctx, const Signature *s,
     SCReturnInt(1);
 }
 
-static int DetectBytejumpMatch(ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectBytejumpMatch(DetectEngineThreadCtx *det_ctx,
                         Packet *p, const Signature *s, const SigMatchCtx *ctx)
 {
     const DetectBytejumpData *data = (const DetectBytejumpData *)ctx;
@@ -586,6 +586,7 @@ static int DetectBytejumpSetup(DetectEngineCtx *de_ctx, Signature *s, const char
         data->offset = ((DetectByteExtractData *)bed_sm->ctx)->local_id;
         data->flags |= DETECT_BYTEJUMP_OFFSET_BE;
         SCFree(offset);
+        offset = NULL;
     }
 
     sm = SigMatchAlloc();
@@ -613,6 +614,9 @@ static int DetectBytejumpSetup(DetectEngineCtx *de_ctx, Signature *s, const char
     ret = 0;
     return ret;
  error:
+    if (offset != NULL) {
+        SCFree(offset);
+    }
     DetectBytejumpFree(data);
     return ret;
 }

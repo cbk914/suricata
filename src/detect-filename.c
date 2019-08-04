@@ -54,7 +54,7 @@
 #include "detect-filename.h"
 #include "app-layer-parser.h"
 
-static int DetectFilenameMatch (ThreadVars *, DetectEngineThreadCtx *, Flow *,
+static int DetectFilenameMatch (DetectEngineThreadCtx *, Flow *,
         uint8_t, File *, const Signature *, const SigMatchCtx *);
 static int DetectFilenameSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectFilenameSetupSticky(DetectEngineCtx *de_ctx, Signature *s, const char *str);
@@ -65,7 +65,7 @@ static int g_file_name_buffer_id = 0;
 
 static int PrefilterMpmFilenameRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id);
+        const DetectBufferMpmRegistery *mpm_reg, int list_id);
 static int DetectEngineInspectFilename(
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
         const DetectEngineAppInspectionEngine *engine,
@@ -173,7 +173,7 @@ void DetectFilenameRegister(void)
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectFilenameMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx,
+static int DetectFilenameMatch (DetectEngineThreadCtx *det_ctx,
         Flow *f, uint8_t flags, File *file, const Signature *s, const SigMatchCtx *m)
 {
     SCEnter();
@@ -472,17 +472,17 @@ static void PrefilterMpmFilenameFree(void *ptr)
 
 static int PrefilterMpmFilenameRegister(DetectEngineCtx *de_ctx,
         SigGroupHead *sgh, MpmCtx *mpm_ctx,
-        const DetectMpmAppLayerRegistery *mpm_reg, int list_id)
+        const DetectBufferMpmRegistery *mpm_reg, int list_id)
 {
     PrefilterMpmFilename *pectx = SCCalloc(1, sizeof(*pectx));
     if (pectx == NULL)
         return -1;
     pectx->list_id = list_id;
     pectx->mpm_ctx = mpm_ctx;
-    pectx->transforms = &mpm_reg->v2.transforms;
+    pectx->transforms = &mpm_reg->transforms;
 
     return PrefilterAppendTxEngine(de_ctx, sgh, PrefilterTxFilename,
-            mpm_reg->v2.alproto, mpm_reg->v2.tx_min_progress,
+            mpm_reg->app_v2.alproto, mpm_reg->app_v2.tx_min_progress,
             pectx, PrefilterMpmFilenameFree, mpm_reg->pname);
 }
 

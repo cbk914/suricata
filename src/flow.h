@@ -282,7 +282,7 @@ typedef struct FlowKey_
     Port sp, dp;
     uint8_t proto;
     uint8_t recursion_level;
-
+    uint16_t vlan_id[2];
 } FlowKey;
 
 typedef struct FlowAddress_ {
@@ -347,7 +347,7 @@ typedef struct Flow_
     uint8_t vlan_idx;
 
     /** Incoming interface */
-    const struct LiveDevice_ *livedev;
+    struct LiveDevice_ *livedev;
 
     /** flow hash - the flow hash before hash table size mod. */
     uint32_t flow_hash;
@@ -482,6 +482,16 @@ typedef struct FlowProtoFreeFunc_ {
     void (*Freefunc)(void *);
 } FlowProtoFreeFunc;
 
+typedef struct FlowBypassInfo_ {
+    bool (* BypassUpdate)(Flow *f, void *data, time_t tsec);
+    void (* BypassFree)(void *data);
+    void *bypass_data;
+    uint64_t tosrcpktcnt;
+    uint64_t tosrcbytecnt;
+    uint64_t todstpktcnt;
+    uint64_t todstbytecnt;
+} FlowBypassInfo;
+
 /** \brief prepare packet for a life with flow
  *  Set PKT_WANTS_FLOW flag to incidate workers should do a flow lookup
  *  and calc the hash value to be used in the lookup and autofp flow
@@ -521,6 +531,9 @@ void FlowUpdateState(Flow *f, enum FlowState s);
 int FlowSetMemcap(uint64_t size);
 uint64_t FlowGetMemcap(void);
 uint64_t FlowGetMemuse(void);
+
+int GetFlowBypassInfoID(void);
+void RegisterFlowBypassInfo(void);
 
 /** ----- Inline functions ----- */
 

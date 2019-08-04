@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2019 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -18,23 +18,12 @@
 /**
  * \file
  *
- * \author Brian Rectanus <brectanu@gmail.com>
+ * \author Victor Julien <victor@inliniac.net>
  */
 
-#ifndef __DETECT_ACK_H__
-#define __DETECT_ACK_H__
+#ifndef _DETECT_IPV6HDR_H
+#define _DETECT_IPV6HDR_H
 
-/**
- * \brief ack data
- */
-typedef struct DetectAckData_ {
-    uint32_t ack;                    /**< ack to match */
-} DetectAckData;
+void DetectIpv6hdrRegister(void);
 
-/**
- * \brief Registration function for ack: keyword
- */
-void DetectAckRegister(void);
-
-#endif /* __DETECT_ACK_H__ */
-
+#endif	/* _DETECT_IPV6HDR_H */

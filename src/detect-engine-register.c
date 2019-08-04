@@ -47,12 +47,15 @@
 #include "detect-engine-dcepayload.h"
 #include "detect-dns-query.h"
 #include "detect-tls-sni.h"
+#include "detect-tls-certs.h"
 #include "detect-tls-cert-fingerprint.h"
 #include "detect-tls-cert-issuer.h"
 #include "detect-tls-cert-subject.h"
 #include "detect-tls-cert-serial.h"
 #include "detect-tls-ja3-hash.h"
 #include "detect-tls-ja3-string.h"
+#include "detect-tls-ja3s-hash.h"
+#include "detect-tls-ja3s-string.h"
 #include "detect-engine-state.h"
 #include "detect-engine-analyzer.h"
 
@@ -72,12 +75,12 @@
 #include "detect-base64-decode.h"
 #include "detect-base64-data.h"
 #include "detect-ipopts.h"
-#include "detect-flags.h"
+#include "detect-tcp-flags.h"
 #include "detect-fragbits.h"
 #include "detect-fragoffset.h"
 #include "detect-gid.h"
-#include "detect-ack.h"
-#include "detect-seq.h"
+#include "detect-tcp-ack.h"
+#include "detect-tcp-seq.h"
 #include "detect-content.h"
 #include "detect-uricontent.h"
 #include "detect-pcre.h"
@@ -103,7 +106,7 @@
 #include "detect-msg.h"
 #include "detect-rev.h"
 #include "detect-flow.h"
-#include "detect-window.h"
+#include "detect-tcp-window.h"
 #include "detect-ftpbounce.h"
 #include "detect-isdataat.h"
 #include "detect-id.h"
@@ -164,12 +167,20 @@
 #include "detect-app-layer-protocol.h"
 #include "detect-template.h"
 #include "detect-template2.h"
+#include "detect-tcphdr.h"
+#include "detect-tcpmss.h"
+#include "detect-udphdr.h"
+#include "detect-ipv4hdr.h"
+#include "detect-ipv6hdr.h"
 #include "detect-krb5-cname.h"
 #include "detect-krb5-errcode.h"
 #include "detect-krb5-msgtype.h"
 #include "detect-krb5-sname.h"
 #include "detect-target.h"
 #include "detect-template-rust-buffer.h"
+#include "detect-snmp-version.h"
+#include "detect-snmp-community.h"
+#include "detect-snmp-pdu_type.h"
 #include "detect-template-buffer.h"
 #include "detect-bypass.h"
 #include "detect-ftpdata.h"
@@ -432,9 +443,12 @@ void SigTableSetup(void)
     DetectTlsSubjectRegister();
     DetectTlsSerialRegister();
     DetectTlsFingerprintRegister();
+    DetectTlsCertsRegister();
 
     DetectTlsJa3HashRegister();
     DetectTlsJa3StringRegister();
+    DetectTlsJa3SHashRegister();
+    DetectTlsJa3SStringRegister();
 
     DetectAppLayerEventRegister();
     /* end of order dependent regs */
@@ -514,12 +528,20 @@ void SigTableSetup(void)
     DetectBase64DataRegister();
     DetectTemplateRegister();
     DetectTemplate2Register();
+    DetectTcphdrRegister();
+    DetectUdphdrRegister();
+    DetectTcpmssRegister();
+    DetectIpv4hdrRegister();
+    DetectIpv6hdrRegister();
     DetectKrb5CNameRegister();
     DetectKrb5ErrCodeRegister();
     DetectKrb5MsgTypeRegister();
     DetectKrb5SNameRegister();
     DetectTargetRegister();
     DetectTemplateRustBufferRegister();
+    DetectSNMPVersionRegister();
+    DetectSNMPCommunityRegister();
+    DetectSNMPPduTypeRegister();
     DetectTemplateBufferRegister();
     DetectBypassRegister();
 

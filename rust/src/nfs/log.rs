@@ -15,8 +15,6 @@
  * 02110-1301, USA.
  */
 
-extern crate libc;
-
 use std::string::String;
 use json::*;
 use nfs::types::*;
@@ -26,7 +24,7 @@ use crc::crc32;
 #[no_mangle]
 pub extern "C" fn rs_nfs_tx_logging_is_filtered(state: &mut NFSState,
                                                 tx: &mut NFSTransaction)
-                                                -> libc::uint8_t
+                                                -> u8
 {
     // TODO probably best to make this configurable
 

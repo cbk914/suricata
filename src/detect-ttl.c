@@ -43,7 +43,7 @@ static pcre *parse_regex;
 static pcre_extra *parse_regex_study;
 
 /* prototypes */
-static int DetectTtlMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *,
+static int DetectTtlMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectTtlSetup (DetectEngineCtx *, Signature *, const char *);
 void DetectTtlFree (void *);
@@ -102,7 +102,7 @@ static inline int TtlMatch(const uint8_t pttl, const uint8_t mode,
  * \retval 0 no match
  * \retval 1 match
  */
-static int DetectTtlMatch (ThreadVars *t, DetectEngineThreadCtx *det_ctx, Packet *p,
+static int DetectTtlMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
         const Signature *s, const SigMatchCtx *ctx)
 {
     if (PKT_IS_PSEUDOPKT(p))
@@ -183,7 +183,7 @@ static DetectTtlData *DetectTtlParse (const char *ttlstr)
                 mode = DETECT_TTL_LT;
                 ttl1 = atoi(arg3);
 
-                SCLogDebug("ttl is %"PRIu8"",ttl1);
+                SCLogDebug("ttl is %d",ttl1);
                 if (strlen(arg1) > 0)
                     return NULL;
 
@@ -195,7 +195,7 @@ static DetectTtlData *DetectTtlParse (const char *ttlstr)
                 mode = DETECT_TTL_GT;
                 ttl1 = atoi(arg3);
 
-                SCLogDebug("ttl is %"PRIu8"",ttl1);
+                SCLogDebug("ttl is %d",ttl1);
                 if (strlen(arg1) > 0)
                     return NULL;
 
@@ -208,7 +208,7 @@ static DetectTtlData *DetectTtlParse (const char *ttlstr)
                 ttl1 = atoi(arg1);
                 ttl2 = atoi(arg3);
 
-                SCLogDebug("ttl is %"PRIu8" to %"PRIu8"",ttl1, ttl2);
+                SCLogDebug("ttl is %d to %d",ttl1, ttl2);
                 if (ttl1 >= ttl2) {
                     SCLogError(SC_ERR_INVALID_SIGNATURE, "invalid ttl range");
                     return NULL;

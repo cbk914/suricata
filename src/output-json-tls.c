@@ -58,8 +58,6 @@ SC_ATOMIC_DECLARE(unsigned int, cert_id);
 #define MODULE_NAME "LogTlsLog"
 #define DEFAULT_LOG_FILENAME "tls.json"
 
-#define OUTPUT_BUFFER_SIZE 65535
-
 #define LOG_TLS_DEFAULT                 0
 #define LOG_TLS_EXTENDED                (1 << 0)
 #define LOG_TLS_CUSTOM                  (1 << 1)
@@ -77,6 +75,7 @@ SC_ATOMIC_DECLARE(unsigned int, cert_id);
 #define LOG_TLS_FIELD_CHAIN             (1 << 9)
 #define LOG_TLS_FIELD_SESSION_RESUMED   (1 << 10)
 #define LOG_TLS_FIELD_JA3               (1 << 11)
+#define LOG_TLS_FIELD_JA3S              (1 << 12)
 
 typedef struct {
     const char *name;
@@ -96,6 +95,7 @@ TlsFields tls_fields[] = {
     { "chain",           LOG_TLS_FIELD_CHAIN },
     { "session_resumed", LOG_TLS_FIELD_SESSION_RESUMED },
     { "ja3",             LOG_TLS_FIELD_JA3 },
+    { "ja3s",            LOG_TLS_FIELD_JA3S },
     { NULL,              -1 }
 };
 
@@ -199,17 +199,18 @@ static void JsonTlsLogNotAfter(json_t *js, SSLState *ssl_state)
 
 static void JsonTlsLogJa3Hash(json_t *js, SSLState *ssl_state)
 {
-    if (ssl_state->ja3_hash != NULL) {
-        json_object_set_new(js, "hash", json_string(ssl_state->ja3_hash));
+    if (ssl_state->client_connp.ja3_hash != NULL) {
+        json_object_set_new(js, "hash",
+                            json_string(ssl_state->client_connp.ja3_hash));
     }
 }
 
 static void JsonTlsLogJa3String(json_t *js, SSLState *ssl_state)
 {
-    if ((ssl_state->ja3_str != NULL) &&
-            ssl_state->ja3_str->data != NULL) {
+    if ((ssl_state->client_connp.ja3_str != NULL) &&
+            ssl_state->client_connp.ja3_str->data != NULL) {
         json_object_set_new(js, "string",
-                            json_string(ssl_state->ja3_str->data));
+                            json_string(ssl_state->client_connp.ja3_str->data));
     }
 }
 
@@ -225,6 +226,34 @@ static void JsonTlsLogJa3(json_t *js, SSLState *ssl_state)
     json_object_set_new(js, "ja3", tjs);
 }
 
+static void JsonTlsLogJa3SHash(json_t *js, SSLState *ssl_state)
+{
+    if (ssl_state->server_connp.ja3_hash != NULL) {
+        json_object_set_new(js, "hash",
+                            json_string(ssl_state->server_connp.ja3_hash));
+    }
+}
+
+static void JsonTlsLogJa3SString(json_t *js, SSLState *ssl_state)
+{
+    if ((ssl_state->server_connp.ja3_str != NULL) &&
+            ssl_state->server_connp.ja3_str->data != NULL) {
+        json_object_set_new(js, "string",
+                            json_string(ssl_state->server_connp.ja3_str->data));
+    }
+}
+
+static void JsonTlsLogJa3S(json_t *js, SSLState *ssl_state)
+{
+    json_t *tjs = json_object();
+    if (unlikely(tjs == NULL))
+        return;
+
+    JsonTlsLogJa3SHash(tjs, ssl_state);
+    JsonTlsLogJa3SString(tjs, ssl_state);
+
+    json_object_set_new(js, "ja3s", tjs);
+}
 static void JsonTlsLogCertificate(json_t *js, SSLState *ssl_state)
 {
     if (TAILQ_EMPTY(&ssl_state->server_connp.certs)) {
@@ -330,6 +359,10 @@ static void JsonTlsLogJSONCustom(OutputTlsCtx *tls_ctx, json_t *js,
     /* tls ja3_hash */
     if (tls_ctx->fields & LOG_TLS_FIELD_JA3)
         JsonTlsLogJa3(js, ssl_state);
+
+    /* tls ja3s */
+    if (tls_ctx->fields & LOG_TLS_FIELD_JA3S)
+        JsonTlsLogJa3S(js, ssl_state);
 }
 
 void JsonTlsLogJSONExtended(json_t *tjs, SSLState * state)
@@ -356,6 +389,9 @@ void JsonTlsLogJSONExtended(json_t *tjs, SSLState * state)
 
     /* tls ja3 */
     JsonTlsLogJa3(tjs, state);
+
+    /* tls ja3s */
+    JsonTlsLogJa3S(tjs, state);
 }
 
 static int JsonTlsLogger(ThreadVars *tv, void *thread_data, const Packet *p,
@@ -440,7 +476,7 @@ static TmEcode JsonTlsLogThreadInit(ThreadVars *t, const void *initdata, void **
     /* use the Output Context (file pointer and mutex) */
     aft->tlslog_ctx = ((OutputCtx *)initdata)->data;
 
-    aft->buffer = MemBufferCreateNew(OUTPUT_BUFFER_SIZE);
+    aft->buffer = MemBufferCreateNew(JSON_OUTPUT_BUFFER_SIZE);
     if (aft->buffer == NULL) {
         SCFree(aft);
         return TM_ECODE_FAILED;
@@ -519,6 +555,7 @@ static OutputTlsCtx *OutputTlsInitCtx(ConfNode *conf)
             Ja3IsDisabled("fields")) {
         /* JA3 is disabled, so don't log any JA3 fields */
         tls_ctx->fields &= ~LOG_TLS_FIELD_JA3;
+        tls_ctx->fields &= ~LOG_TLS_FIELD_JA3S;
     }
 
     if ((tls_ctx->fields & LOG_TLS_FIELD_CERTIFICATE) &&

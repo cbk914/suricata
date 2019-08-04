@@ -138,6 +138,10 @@ SCEnumCharMap http_decoder_event_table[ ] = {
         HTTP_DECODER_EVENT_REQUEST_FIELD_TOO_LONG},
     { "RESPONSE_FIELD_TOO_LONG",
         HTTP_DECODER_EVENT_RESPONSE_FIELD_TOO_LONG},
+    { "REQUEST_LINE_INVALID",
+        HTTP_DECODER_EVENT_REQUEST_LINE_INVALID},
+    { "REQUEST_BODY_UNEXPECTED",
+        HTTP_DECODER_EVENT_REQUEST_BODY_UNEXPECTED},
     { "REQUEST_SERVER_PORT_TCP_PORT_MISMATCH",
         HTTP_DECODER_EVENT_REQUEST_SERVER_PORT_TCP_PORT_MISMATCH},
     { "REQUEST_URI_HOST_INVALID",
@@ -150,6 +154,8 @@ SCEnumCharMap http_decoder_event_table[ ] = {
         HTTP_DECODER_EVENT_REQUEST_HEADER_REPETITION},
     { "RESPONSE_HEADER_REPETITION",
         HTTP_DECODER_EVENT_RESPONSE_HEADER_REPETITION},
+    { "DOUBLE_ENCODED_URI",
+        HTTP_DECODER_EVENT_DOUBLE_ENCODED_URI},
     { "URI_DELIM_NON_COMPLIANT",
         HTTP_DECODER_EVENT_URI_DELIM_NON_COMPLIANT},
     { "METHOD_DELIM_NON_COMPLIANT",
@@ -160,6 +166,18 @@ SCEnumCharMap http_decoder_event_table[ ] = {
         HTTP_DECODER_EVENT_TOO_MANY_ENCODING_LAYERS},
     { "ABNORMAL_CE_HEADER",
         HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER},
+    { "RESPONSE_MULTIPART_BYTERANGES",
+        HTTP_DECODER_EVENT_RESPONSE_MULTIPART_BYTERANGES},
+    { "RESPONSE_ABNORMAL_TRANSFER_ENCODING",
+        HTTP_DECODER_EVENT_RESPONSE_ABNORMAL_TRANSFER_ENCODING},
+    { "RESPONSE_CHUNKED_OLD_PROTO",
+        HTTP_DECODER_EVENT_RESPONSE_CHUNKED_OLD_PROTO},
+    { "RESPONSE_INVALID_PROTOCOL",
+        HTTP_DECODER_EVENT_RESPONSE_INVALID_PROTOCOL},
+    { "RESPONSE_INVALID_STATUS",
+        HTTP_DECODER_EVENT_RESPONSE_INVALID_STATUS},
+    { "REQUEST_LINE_INCOMPLETE",
+        HTTP_DECODER_EVENT_REQUEST_LINE_INCOMPLETE},
 
     /* suricata warnings/errors */
     { "MULTIPART_GENERIC_ERROR",
@@ -269,19 +287,16 @@ static void HTPSetEvent(HtpState *s, HtpTxUserData *htud, uint8_t e)
     SCLogDebug("couldn't set event %u", e);
 }
 
-static AppLayerDecoderEvents *HTPGetEvents(void *state, uint64_t tx_id)
+static AppLayerDecoderEvents *HTPGetEvents(void *tx)
 {
-    SCLogDebug("get HTTP events for TX %"PRIu64, tx_id);
+    SCLogDebug("get HTTP events for TX %p", tx);
 
-    HtpState *s = (HtpState *)state;
-    htp_tx_t *tx = HTPStateGetTx(s, tx_id);
-    if (tx != NULL) {
-        HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
-        if (htud != NULL) {
-            SCLogDebug("has htud, htud->decoder_events %p", htud->decoder_events);
-            return htud->decoder_events;
-        }
+    HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
+    if (htud != NULL) {
+        SCLogDebug("has htud, htud->decoder_events %p", htud->decoder_events);
+        return htud->decoder_events;
     }
+
     return NULL;
 }
 
@@ -491,6 +506,7 @@ struct {
 /*    { "Invalid authority port", HTTP_DECODER_EVENT_INVALID_AUTHORITY_PORT}, htp no longer returns this error */
     { "Request buffer over", HTTP_DECODER_EVENT_REQUEST_FIELD_TOO_LONG},
     { "Response buffer over", HTTP_DECODER_EVENT_RESPONSE_FIELD_TOO_LONG},
+    { "C-T multipart/byteranges in responses not supported", HTTP_DECODER_EVENT_RESPONSE_MULTIPART_BYTERANGES},
 };
 
 struct {
@@ -519,6 +535,12 @@ struct {
     { "C-E unknown setting", HTTP_DECODER_EVENT_ABNORMAL_CE_HEADER},
     { "Excessive request header repetitions", HTTP_DECODER_EVENT_REQUEST_HEADER_REPETITION},
     { "Excessive response header repetitions", HTTP_DECODER_EVENT_RESPONSE_HEADER_REPETITION},
+    { "Transfer-encoding has abnormal chunked value", HTTP_DECODER_EVENT_RESPONSE_ABNORMAL_TRANSFER_ENCODING},
+    { "Chunked transfer-encoding on HTTP/0.9 or HTTP/1.0", HTTP_DECODER_EVENT_RESPONSE_CHUNKED_OLD_PROTO},
+    { "Invalid response line: invalid protocol", HTTP_DECODER_EVENT_RESPONSE_INVALID_PROTOCOL},
+    { "Invalid response line: invalid response status", HTTP_DECODER_EVENT_RESPONSE_INVALID_STATUS},
+    { "Request line incomplete", HTTP_DECODER_EVENT_REQUEST_LINE_INCOMPLETE},
+    { "Unexpected request body", HTTP_DECODER_EVENT_REQUEST_BODY_UNEXPECTED},
 };
 
 #define HTP_ERROR_MAX (sizeof(htp_errors) / sizeof(htp_errors[0]))
@@ -653,8 +675,15 @@ static inline void HTPErrorCheckTxRequestFlags(HtpState *s, htp_tx_t *tx)
         HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
         if (htud == NULL)
             return;
-
         HTPSetEvent(s, htud, HTTP_DECODER_EVENT_AUTH_UNRECOGNIZED);
+    }
+    if (tx->is_protocol_0_9 && tx->request_method_number == HTP_M_UNKNOWN &&
+        (tx->request_protocol_number == HTP_PROTOCOL_INVALID ||
+         tx->request_protocol_number == HTP_PROTOCOL_UNKNOWN)) {
+        HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
+        if (htud == NULL)
+            return;
+        HTPSetEvent(s, htud, HTTP_DECODER_EVENT_REQUEST_LINE_INVALID);
     }
 }
 
@@ -2140,26 +2169,46 @@ static int HTPCallbackRequestLine(htp_tx_t *tx)
     return HTP_OK;
 }
 
-static int HTPCallbackDoubleDecodeQuery(htp_tx_t *tx)
+static int HTPCallbackDoubleDecodeUriPart(htp_tx_t *tx, bstr *part)
 {
-    if (tx->parsed_uri == NULL || tx->parsed_uri->query == NULL)
+    if (part == NULL)
         return HTP_OK;
 
     uint64_t flags = 0;
-    htp_urldecode_inplace(tx->cfg, HTP_DECODER_URLENCODED, tx->parsed_uri->query, &flags);
+    size_t prevlen = bstr_len(part);
+    htp_status_t res = htp_urldecode_inplace(tx->cfg, HTP_DECODER_URLENCODED, part, &flags);
+    // shorter string means that uri was encoded
+    if (res == HTP_OK && prevlen > bstr_len(part)) {
+        HtpTxUserData *htud = (HtpTxUserData *) htp_tx_get_user_data(tx);
+        if (likely(htud == NULL)) {
+            htud = HTPCalloc(1, sizeof(*htud));
+            if (unlikely(htud == NULL))
+                return HTP_OK;
+            htp_tx_set_user_data(tx, htud);
+        }
+        HtpState *s = htp_connp_get_user_data(tx->connp);
+        if (s == NULL)
+            return HTP_OK;
+        HTPSetEvent(s, htud, HTTP_DECODER_EVENT_DOUBLE_ENCODED_URI);
+    }
 
     return HTP_OK;
 }
 
-static int HTPCallbackDoubleDecodePath(htp_tx_t *tx)
+static int HTPCallbackDoubleDecodeQuery(htp_tx_t *tx)
 {
-    if (tx->parsed_uri == NULL || tx->parsed_uri->path == NULL)
+    if (tx->parsed_uri == NULL)
         return HTP_OK;
 
-    uint64_t flags = 0;
-    htp_urldecode_inplace(tx->cfg, HTP_DECODER_URL_PATH, tx->parsed_uri->path, &flags);
+    return HTPCallbackDoubleDecodeUriPart(tx, tx->parsed_uri->query);
+}
 
-    return HTP_OK;
+static int HTPCallbackDoubleDecodePath(htp_tx_t *tx)
+{
+    if (tx->parsed_uri == NULL)
+        return HTP_OK;
+
+    return HTPCallbackDoubleDecodeUriPart(tx, tx->parsed_uri->path);
 }
 
 static int HTPCallbackRequestHeaderData(htp_tx_data_t *tx_data)
@@ -2462,13 +2511,13 @@ static void HTPConfigParseParameters(HTPCfgRec *cfg_prec, ConfNode *s,
                 exit(EXIT_FAILURE);
             }
 
-        } else if (strcasecmp("double-decode-path", p->name) == 0) {
+        } else if (strcasecmp("double-decode-query", p->name) == 0) {
             if (ConfValIsTrue(p->val)) {
                 htp_config_register_request_line(cfg_prec->cfg,
                                                  HTPCallbackDoubleDecodeQuery);
             }
 
-        } else if (strcasecmp("double-decode-query", p->name) == 0) {
+        } else if (strcasecmp("double-decode-path", p->name) == 0) {
             if (ConfValIsTrue(p->val)) {
                 htp_config_register_request_line(cfg_prec->cfg,
                                                  HTPCallbackDoubleDecodePath);
@@ -2840,6 +2889,22 @@ static int HTPStateGetEventInfo(const char *event_name,
     return 0;
 }
 
+static int HTPStateGetEventInfoById(int event_id, const char **event_name,
+                                    AppLayerEventType *event_type)
+{
+    *event_name = SCMapEnumValueToName(event_id, http_decoder_event_table);
+    if (*event_name == NULL) {
+        SCLogError(SC_ERR_INVALID_ENUM_MAP, "event \"%d\" not present in "
+                   "http's enum map table.",  event_id);
+        /* this should be treated as fatal */
+        return -1;
+    }
+
+    *event_type = APP_LAYER_EVENT_TYPE_TRANSACTION;
+
+    return 0;
+}
+
 static void HTPStateTruncate(void *state, uint8_t direction)
 {
     FileContainer *fc = HTPStateGetFiles(state, direction);
@@ -2985,6 +3050,7 @@ void RegisterHTPParsers(void)
                                                                HTPStateGetAlstateProgressCompletionStatus);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_TCP, ALPROTO_HTTP, HTPGetEvents);
         AppLayerParserRegisterGetEventInfo(IPPROTO_TCP, ALPROTO_HTTP, HTPStateGetEventInfo);
+        AppLayerParserRegisterGetEventInfoById(IPPROTO_TCP, ALPROTO_HTTP, HTPStateGetEventInfoById);
 
         AppLayerParserRegisterTruncateFunc(IPPROTO_TCP, ALPROTO_HTTP, HTPStateTruncate);
         AppLayerParserRegisterDetectStateFuncs(IPPROTO_TCP, ALPROTO_HTTP,
@@ -6070,7 +6136,8 @@ libhtp:\n\
     FAIL_IF(tx->request_method_number != HTP_M_GET);
     FAIL_IF(tx->request_protocol_number != HTP_PROTOCOL_1_1);
 
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, txtmp);
     FAIL_IF_NULL(decoder_events);
 
     FAIL_IF(decoder_events->events[0] != HTTP_DECODER_EVENT_REQUEST_FIELD_TOO_LONG);
@@ -6187,7 +6254,8 @@ libhtp:\n\
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, txtmp);
     if (decoder_events != NULL) {
         printf("app events: ");
         FLOWLOCK_UNLOCK(f);
@@ -6269,7 +6337,8 @@ static int HTPParserTest16(void)
     }
 
     FLOWLOCK_WRLOCK(f);
-    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    void *txtmp = AppLayerParserGetTx(IPPROTO_TCP, ALPROTO_HTTP,f->alstate, 0);
+    AppLayerDecoderEvents *decoder_events = AppLayerParserGetEventsByTx(IPPROTO_TCP, ALPROTO_HTTP, txtmp);
     if (decoder_events == NULL) {
         printf("no app events: ");
         FLOWLOCK_UNLOCK(f);

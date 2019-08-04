@@ -16,10 +16,10 @@ debug = []
 
 [dependencies]
 nom = "4.2"
-libc = "^0.2.36"
 crc = "1.8"
 der-parser = "1.1"
 kerberos-parser = "0.2"
 
 ntp-parser = "0.3"
 ipsec-parser = "0.4"
+snmp-parser = "0.3.0"

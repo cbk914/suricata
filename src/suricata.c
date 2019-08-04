@@ -230,6 +230,10 @@ int g_disable_randomness = 0;
 int g_disable_randomness = 1;
 #endif
 
+/** determine (without branching) if we include the vlan_ids when hashing or
+  * comparing flows */
+uint16_t g_vlan_mask = 0xffff;
+
 /** Suricata instance */
 SCInstance suricata;
 
@@ -577,7 +581,7 @@ static void SetBpfStringFromFile(char *filename)
 static void PrintUsage(const char *progname)
 {
 #ifdef REVISION
-    printf("%s %s (rev %s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
+    printf("%s %s (%s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
 #else
     printf("%s %s\n", PROG_NAME, PROG_VER);
 #endif
@@ -680,7 +684,7 @@ static void PrintBuildInfo(void)
     const char *tls = "pthread key";
 
 #ifdef REVISION
-    printf("This is %s version %s (rev %s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
+    printf("This is %s version %s (%s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
 #elif defined RELEASE
     printf("This is %s version %s RELEASE\n", PROG_NAME, PROG_VER);
 #else
@@ -1050,7 +1054,7 @@ static void SCInstanceInit(SCInstance *suri, const char *progname)
 static TmEcode PrintVersion(void)
 {
 #ifdef REVISION
-    printf("This is %s version %s (rev %s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
+    printf("This is %s version %s (%s)\n", PROG_NAME, PROG_VER, xstr(REVISION));
 #elif defined RELEASE
     printf("This is %s version %s RELEASE\n", PROG_NAME, PROG_VER);
 #else
@@ -1063,7 +1067,7 @@ static TmEcode LogVersion(SCInstance *suri)
 {
     const char *mode = suri->system ? "SYSTEM" : "USER";
 #ifdef REVISION
-    SCLogNotice("This is %s version %s (rev %s) running in %s mode",
+    SCLogNotice("This is %s version %s (%s) running in %s mode",
             PROG_NAME, PROG_VER, xstr(REVISION), mode);
 #elif defined RELEASE
     SCLogNotice("This is %s version %s RELEASE running in %s mode",
@@ -1244,6 +1248,7 @@ static void ParseCommandLineAFL(const char *opt_name, char *opt_arg)
 
     } else if(strcmp(opt_name, "afl-ftp-request") == 0) {
         //printf("arg: //%s\n", opt_arg);
+        IPPairInitConfig(FLOW_QUIET);
         MpmTableSetup();
         SpmTableSetup();
         AppLayerProtoDetectSetup();
@@ -1252,6 +1257,7 @@ static void ParseCommandLineAFL(const char *opt_name, char *opt_arg)
         exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_FTP, opt_arg));
     } else if(strcmp(opt_name, "afl-ftp") == 0) {
         //printf("arg: //%s\n", opt_arg);
+        IPPairInitConfig(FLOW_QUIET);
         MpmTableSetup();
         SpmTableSetup();
         AppLayerProtoDetectSetup();
@@ -2703,7 +2709,9 @@ static int PostConfLoadedSetup(SCInstance *suri)
     StorageInit();
 #ifdef HAVE_PACKET_EBPF
     EBPFRegisterExtension();
+    LiveDevRegisterExtension();
 #endif
+    RegisterFlowBypassInfo();
     AppLayerSetup();
 
     /* Suricata will use this umask if provided. By default it will use the
@@ -2962,6 +2970,13 @@ int main(int argc, char **argv)
         ConfDump();
         exit(EXIT_SUCCESS);
     }
+
+    int vlan_tracking = 1;
+    if (ConfGetBool("vlan.use-for-tracking", &vlan_tracking) == 1 && !vlan_tracking) {
+        /* Ignore vlan_ids when comparing flows. */
+        g_vlan_mask = 0x0000;
+    }
+    SCLogDebug("vlan tracking is %s", vlan_tracking == 1 ? "enabled" : "disabled");
 
     SetupUserMode(&suricata);
 
