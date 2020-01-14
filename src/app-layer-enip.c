@@ -88,6 +88,26 @@ static int ENIPSetTxDetectState(void *vtx, DetectEngineState *s)
     return 0;
 }
 
+static uint64_t ENIPGetTxDetectFlags(void *vtx, uint8_t dir)
+{
+    ENIPTransaction *tx = (ENIPTransaction *)vtx;
+    if (dir & STREAM_TOSERVER) {
+        return tx->detect_flags_ts;
+    } else {
+        return tx->detect_flags_tc;
+    }
+}
+
+static void ENIPSetTxDetectFlags(void *vtx, uint8_t dir, uint64_t flags)
+{
+    ENIPTransaction *tx = (ENIPTransaction *)vtx;
+    if (dir &STREAM_TOSERVER) {
+        tx->detect_flags_ts = flags;
+    } else {
+        tx->detect_flags_tc = flags;
+    }
+}
+
 static void *ENIPGetTx(void *alstate, uint64_t tx_id)
 {
     ENIPState         *enip = (ENIPState *) alstate;
@@ -313,7 +333,7 @@ static void ENIPStateTransactionFree(void *state, uint64_t tx_id)
  * \retval 1 when the command is parsed, 0 otherwise
  */
 static int ENIPParse(Flow *f, void *state, AppLayerParserState *pstate,
-        uint8_t *input, uint32_t input_len, void *local_data,
+        const uint8_t *input, uint32_t input_len, void *local_data,
         const uint8_t flags)
 {
     SCEnter();
@@ -365,7 +385,7 @@ static int ENIPParse(Flow *f, void *state, AppLayerParserState *pstate,
 
 
 static uint16_t ENIPProbingParser(Flow *f, uint8_t direction,
-        uint8_t *input, uint32_t input_len, uint8_t *rdir)
+        const uint8_t *input, uint32_t input_len, uint8_t *rdir)
 {
     // SCLogDebug("ENIPProbingParser %d", input_len);
     if (input_len < sizeof(ENIPEncapHdr))
@@ -450,6 +470,8 @@ void RegisterENIPUDPParsers(void)
 
         AppLayerParserRegisterParserAcceptableDataDirection(IPPROTO_UDP,
                 ALPROTO_ENIP, STREAM_TOSERVER | STREAM_TOCLIENT);
+        AppLayerParserRegisterDetectFlagsFuncs(IPPROTO_UDP, ALPROTO_ENIP,
+                ENIPGetTxDetectFlags, ENIPSetTxDetectFlags);
 
     } else
     {
@@ -533,6 +555,8 @@ void RegisterENIPTCPParsers(void)
         /* This parser accepts gaps. */
         AppLayerParserRegisterOptionFlags(IPPROTO_TCP, ALPROTO_ENIP,
                 APP_LAYER_PARSER_OPT_ACCEPT_GAPS);
+        AppLayerParserRegisterDetectFlagsFuncs(IPPROTO_TCP, ALPROTO_ENIP,
+                ENIPGetTxDetectFlags, ENIPSetTxDetectFlags);
 
     } else
     {

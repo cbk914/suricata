@@ -34,23 +34,23 @@ use std::collections::HashMap;
 
 use nom;
 
-use core::*;
-use log::*;
-use applayer;
-use applayer::LoggerFlags;
+use crate::core::*;
+use crate::log::*;
+use crate::applayer;
+use crate::applayer::LoggerFlags;
 
-use smb::nbss_records::*;
-use smb::smb1_records::*;
-use smb::smb2_records::*;
+use crate::smb::nbss_records::*;
+use crate::smb::smb1_records::*;
+use crate::smb::smb2_records::*;
 
-use smb::smb1::*;
-use smb::smb2::*;
-use smb::smb3::*;
-use smb::dcerpc::*;
-use smb::session::*;
-use smb::events::*;
-use smb::files::*;
-use smb::smb2_ioctl::*;
+use crate::smb::smb1::*;
+use crate::smb::smb2::*;
+use crate::smb::smb3::*;
+use crate::smb::dcerpc::*;
+use crate::smb::session::*;
+use crate::smb::events::*;
+use crate::smb::files::*;
+use crate::smb::smb2_ioctl::*;
 
 pub static mut SURICATA_SMB_FILE_CONFIG: Option<&'static SuricataFileContext> = None;
 
@@ -394,7 +394,7 @@ impl SMBTransactionSetFilePathInfo {
 impl SMBState {
     pub fn new_setfileinfo_tx(&mut self, filename: Vec<u8>, fid: Vec<u8>,
             subcmd: u16, loi: u16, delete_on_close: bool)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
 
@@ -412,7 +412,7 @@ impl SMBState {
 
     pub fn new_setpathinfo_tx(&mut self, filename: Vec<u8>,
             subcmd: u16, loi: u16, delete_on_close: bool)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
 
@@ -447,7 +447,7 @@ impl SMBTransactionRename {
 
 impl SMBState {
     pub fn new_rename_tx(&mut self, fuid: Vec<u8>, oldname: Vec<u8>, newname: Vec<u8>)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
 
@@ -924,7 +924,7 @@ impl SMBState {
      * track a single cmd request/reply pair. */
 
     pub fn new_generic_tx(&mut self, smb_ver: u8, smb_cmd: u16, key: SMBCommonHdr)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
         if smb_ver == 1 && smb_cmd <= 255 {
@@ -998,7 +998,7 @@ impl SMBState {
     }
 
     pub fn new_negotiate_tx(&mut self, smb_ver: u8)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
         if smb_ver == 1 {
@@ -1040,7 +1040,7 @@ impl SMBState {
     }
 
     pub fn new_treeconnect_tx(&mut self, hdr: SMBCommonHdr, name: Vec<u8>)
-        -> (&mut SMBTransaction)
+        -> &mut SMBTransaction
     {
         let mut tx = self.new_tx();
 
@@ -1128,6 +1128,7 @@ impl SMBState {
                     Ok("lsarpc") => ("lsarpc", true),
                     Ok("samr") => ("samr", true),
                     Ok("spoolss") => ("spoolss", true),
+                    Ok("winreg") => ("winreg", true),
                     Ok("suricata::dcerpc") => ("unknown", true),
                     Err(_) => ("MALFORMED", false),
                     Ok(&_) => {
@@ -1142,46 +1143,39 @@ impl SMBState {
         (&name, is_dcerpc)
     }
 
-    /* if we have marked the ssn as 'gapped' we check to see if
-     * we've caught up. The check is to see if we have the last
-     * tx in our list is done. This means we've seen both sides
-     * and we're back in sync. Mark older txs as 'done' */
-    fn check_gap_resync(&mut self, prior_max_id: u64)
+    /* after a gap we will consider all transactions complete for our
+     * direction. File transfer transactions are an exception. Those
+     * can handle gaps. */
+    fn post_gap_housekeeping(&mut self, dir: u8)
     {
-        SCLogDebug!("check_gap_resync2: post-GAP resync check ({}/{})", self.ts_ssn_gap, self.tc_ssn_gap);
-        if !self.ts_ssn_gap && !self.tc_ssn_gap {
-            return;
-        }
-
-        let (last_done, id) = match self.transactions.last() {
-            Some(tx) => {
-                (tx.request_done && tx.response_done, tx.id)
-            },
-            None => (false, 0),
-        };
-        if last_done && id > 0 {
-            SCLogDebug!("check_gap_resync2: TX {} is done post-GAP, mark all older ones complete", id);
-            self.ts_ssn_gap = false;
-            self.tc_ssn_gap = false;
-            self.close_non_file_txs(prior_max_id);
-        }
-    }
-
-    /* close all txs execpt file xfers. */
-    fn close_non_file_txs(&mut self, max_id: u64) {
-        SCLogDebug!("close_non_file_txs: checking for non-file txs to wrap up");
-        for tx in &mut self.transactions {
-            if tx.id >= max_id {
-                SCLogDebug!("close_non_file_txs: done");
-                break;
+        if self.ts_ssn_gap && dir == STREAM_TOSERVER {
+            for tx in &mut self.transactions {
+                if tx.id >= self.tx_id {
+                    SCLogDebug!("post_gap_housekeeping: done");
+                    break;
+                }
+                if let Some(SMBTransactionTypeData::FILE(_)) = tx.type_data {
+                    // leaving FILE txs open as they can deal with gaps.
+                } else {
+                    SCLogDebug!("post_gap_housekeeping: tx {} marked as done TS", tx.id);
+                    tx.request_done = true;
+                }
             }
-            if let Some(SMBTransactionTypeData::FILE(_)) = tx.type_data {
-                // leaving FILE txs open as they can deal with gaps.
-            } else {
-                SCLogDebug!("ose_non_file_txs: tx {} marked as done", tx.id);
-                tx.request_done = true;
-                tx.response_done = true;
+        } else if self.tc_ssn_gap && dir == STREAM_TOCLIENT {
+            for tx in &mut self.transactions {
+                if tx.id >= self.tx_id {
+                    SCLogDebug!("post_gap_housekeeping: done");
+                    break;
+                }
+                if let Some(SMBTransactionTypeData::FILE(_)) = tx.type_data {
+                    // leaving FILE txs open as they can deal with gaps.
+                } else {
+                    SCLogDebug!("post_gap_housekeeping: tx {} marked as done TC", tx.id);
+                    tx.request_done = true;
+                    tx.response_done = true;
+                }
             }
+
         }
     }
 
@@ -1323,8 +1317,6 @@ impl SMBState {
     /// Parsing function, handling TCP chunks fragmentation
     pub fn parse_tcp_data_ts<'b>(&mut self, i: &'b[u8]) -> u32
     {
-        let max_tx_id = self.tx_id;
-
         let mut v : Vec<u8>;
         //println!("parse_tcp_data_ts ({})",i.len());
         //println!("{:?}",i);
@@ -1464,7 +1456,7 @@ impl SMBState {
             }
         };
 
-        self.check_gap_resync(max_tx_id);
+        self.post_gap_housekeeping(STREAM_TOSERVER);
         0
     }
 
@@ -1551,8 +1543,6 @@ impl SMBState {
     /// Parsing function, handling TCP chunks fragmentation
     pub fn parse_tcp_data_tc<'b>(&mut self, i: &'b[u8]) -> u32
     {
-        let max_tx_id = self.tx_id;
-
         let mut v : Vec<u8>;
         // Check if TCP data is being defragmented
         let tcp_buffer = match self.tcp_buffer_tc.len() {
@@ -1693,7 +1683,7 @@ impl SMBState {
                 },
             }
         };
-        self.check_gap_resync(max_tx_id);
+        self.post_gap_housekeeping(STREAM_TOCLIENT);
         self._debug_tx_stats();
         0
     }
@@ -1796,7 +1786,7 @@ pub extern "C" fn rs_smb_state_free(state: *mut std::os::raw::c_void) {
 pub extern "C" fn rs_smb_parse_request_tcp(_flow: *mut Flow,
                                        state: &mut SMBState,
                                        _pstate: *mut std::os::raw::c_void,
-                                       input: *mut u8,
+                                       input: *const u8,
                                        input_len: u32,
                                        _data: *mut std::os::raw::c_void,
                                        flags: u8)
@@ -1834,7 +1824,7 @@ pub extern "C" fn rs_smb_parse_request_tcp_gap(
 pub extern "C" fn rs_smb_parse_response_tcp(_flow: *mut Flow,
                                         state: &mut SMBState,
                                         _pstate: *mut std::os::raw::c_void,
-                                        input: *mut u8,
+                                        input: *const u8,
                                         input_len: u32,
                                         _data: *mut std::os::raw::c_void,
                                         flags: u8)

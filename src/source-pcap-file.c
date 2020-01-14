@@ -263,10 +263,9 @@ TmEcode ReceivePcapFileThreadInit(ThreadVars *tv, const void *initdata, void **d
             SCReturnInt(TM_ECODE_OK);
         }
 
+        pv->shared = &ptv->shared;
         status = InitPcapFile(pv);
         if(status == TM_ECODE_OK) {
-            pv->shared = &ptv->shared;
-
             ptv->is_directory = 0;
             ptv->behavior.file = pv;
         } else {
@@ -410,7 +409,7 @@ TmEcode DecodePcapFile(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, P
         FlowWakeupFlowManagerThread();
     }
 
-    Decoder decoder;
+    DecoderFunc decoder;
     if(ValidateLinkType(p->datalink, &decoder) == TM_ECODE_OK) {
 
         /* call the decoder */

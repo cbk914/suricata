@@ -187,19 +187,21 @@ TmEcode InitPcapFile(PcapFileFileVars *pfv)
         if (pcap_setfilter(pfv->pcap_handle, &pfv->filter) < 0) {
             SCLogError(SC_ERR_BPF,"could not set bpf filter %s for %s",
                        pcap_geterr(pfv->pcap_handle), pfv->filename);
+            pcap_freecode(&pfv->filter);
             SCReturnInt(TM_ECODE_FAILED);
         }
+        pcap_freecode(&pfv->filter);
     }
 
     pfv->datalink = pcap_datalink(pfv->pcap_handle);
     SCLogDebug("datalink %" PRId32 "", pfv->datalink);
 
-    Decoder temp;
+    DecoderFunc temp;
     TmEcode validated = ValidateLinkType(pfv->datalink, &temp);
     SCReturnInt(validated);
 }
 
-TmEcode ValidateLinkType(int datalink, Decoder *decoder)
+TmEcode ValidateLinkType(int datalink, DecoderFunc *decoder)
 {
     switch (datalink) {
         case LINKTYPE_LINUX_SLL:

@@ -16,11 +16,11 @@
  */
 
 use std;
-use core::{self, ALPROTO_UNKNOWN, AppProto, Flow, IPPROTO_TCP};
-use log::*;
+use crate::core::{self, ALPROTO_UNKNOWN, AppProto, Flow, IPPROTO_TCP};
+use crate::log::*;
 use std::mem::transmute;
-use applayer::{self, LoggerFlags};
-use parser::*;
+use crate::applayer::{self, LoggerFlags};
+use crate::parser::*;
 use std::ffi::CString;
 use nom;
 use super::parser;
@@ -544,6 +544,8 @@ pub unsafe extern "C" fn rs_template_register_parser() {
         set_tx_mpm_id: None,
         get_files: None,
         get_tx_iterator: Some(rs_template_state_get_tx_iterator),
+        get_tx_detect_flags: None,
+        set_tx_detect_flags: None,
     };
 
     let ip_proto_str = CString::new("tcp").unwrap();

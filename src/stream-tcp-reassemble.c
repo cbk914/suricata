@@ -82,7 +82,6 @@ SC_ATOMIC_DECLARE(uint64_t, ra_memuse);
 /* prototypes */
 TcpSegment *StreamTcpGetSegment(ThreadVars *tv, TcpReassemblyThreadCtx *);
 void StreamTcpCreateTestPacket(uint8_t *, uint8_t, uint8_t, uint8_t);
-void StreamTcpReassemblePseudoPacketCreate(TcpStream *, Packet *, PacketQueue *);
 
 void StreamTcpReassembleInitMemuse(void)
 {
@@ -504,7 +503,7 @@ int StreamTcpReassembleDepthReached(Packet *p)
 /**
  *  \internal
  *  \brief Function to Check the reassembly depth valuer against the
- *        allowed max depth of the stream reassmbly for TCP streams.
+ *        allowed max depth of the stream reassembly for TCP streams.
  *
  *  \param stream stream direction
  *  \param seq sequence number where "size" starts
@@ -1026,7 +1025,11 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
             continue;
         } else if (mydata == NULL || mydata_len == 0) {
             /* Possibly a gap, but no new data. */
-            return 0;
+            if ((p->flags & PKT_PSEUDO_STREAM_END) == 0 || ssn->state < TCP_CLOSED)
+                SCReturnInt(0);
+
+            mydata = NULL;
+            mydata_len = 0;
         }
         SCLogDebug("%"PRIu64" got %p/%u", p->pcap_cnt, mydata, mydata_len);
         break;
@@ -1421,7 +1424,7 @@ static int StreamReassembleRawInline(TcpSession *ssn, const Packet *p,
                     // more trailing data than we need
 
                     if (before >= (chunk_size - p->payload_len) / 2) {
-                        // also more heading data, devide evenly
+                        // also more heading data, divide evenly
                         before = after = (chunk_size - p->payload_len) / 2;
                     } else {
                         // heading data is less than requested, give the
@@ -1534,6 +1537,12 @@ static int StreamReassembleRawDo(TcpSession *ssn, TcpStream *stream,
      * use a minimal inspect depth, we actually take the app progress
      * as that is the right edge of the data. Then we take the window
      * of 'min_inspect_depth' before that. */
+
+    SCLogDebug("respect_inspect_depth %s STREAMTCP_STREAM_FLAG_TRIGGER_RAW %s stream->min_inspect_depth %u",
+            respect_inspect_depth ? "true" : "false",
+            (stream->flags & STREAMTCP_STREAM_FLAG_TRIGGER_RAW) ? "true" : "false",
+            stream->min_inspect_depth);
+
     if (respect_inspect_depth &&
         (stream->flags & STREAMTCP_STREAM_FLAG_TRIGGER_RAW)
         && stream->min_inspect_depth)
@@ -1544,9 +1553,11 @@ static int StreamReassembleRawDo(TcpSession *ssn, TcpStream *stream,
         } else {
             progress -= stream->min_inspect_depth;
         }
-        SCLogDebug("applied min inspect depth due to STREAMTCP_STREAM_FLAG_TRIGGER_RAW: progress %"PRIu64, progress);
 
         SCLogDebug("stream app %"PRIu64", raw %"PRIu64, STREAM_APP_PROGRESS(stream), STREAM_RAW_PROGRESS(stream));
+
+        progress = MIN(progress, STREAM_RAW_PROGRESS(stream));
+        SCLogDebug("applied min inspect depth due to STREAMTCP_STREAM_FLAG_TRIGGER_RAW: progress %"PRIu64, progress);
     }
 
     SCLogDebug("progress %"PRIu64", min inspect depth %u %s", progress, stream->min_inspect_depth, stream->flags & STREAMTCP_STREAM_FLAG_TRIGGER_RAW ? "STREAMTCP_STREAM_FLAG_TRIGGER_RAW":"(no trigger)");
@@ -1640,7 +1651,7 @@ int StreamReassembleRaw(TcpSession *ssn, const Packet *p,
                         StreamReassembleRawFunc Callback, void *cb_data,
                         uint64_t *progress_out, bool respect_inspect_depth)
 {
-    /* handle inline seperately as the logic is very different */
+    /* handle inline separately as the logic is very different */
     if (StreamTcpInlineMode() == TRUE) {
         return StreamReassembleRawInline(ssn, p, Callback, cb_data, progress_out);
     }

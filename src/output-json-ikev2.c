@@ -47,9 +47,6 @@
 #include "app-layer-ikev2.h"
 #include "output-json-ikev2.h"
 
-#ifdef HAVE_RUST
-#ifdef HAVE_LIBJANSSON
-
 #include "rust.h"
 #include "rust-ikev2-log-gen.h"
 
@@ -179,18 +176,3 @@ void JsonIKEv2LogRegister(void)
 
     SCLogDebug("IKEv2 JSON logger registered.");
 }
-
-#else /* No JSON support. */
-
-void JsonIKEv2LogRegister(void)
-{
-}
-
-#endif /* HAVE_LIBJANSSON */
-#else /* No rust support. */
-
-void JsonIKEv2LogRegister(void)
-{
-}
-
-#endif /* HAVE_RUST */

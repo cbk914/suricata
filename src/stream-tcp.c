@@ -99,7 +99,6 @@ void StreamTcpReturnStreamSegments (TcpStream *);
 void StreamTcpInitConfig(char);
 int StreamTcpGetFlowState(void *);
 void StreamTcpSetOSPolicy(TcpStream*, Packet*);
-void StreamTcpPseudoPacketCreateStreamEndPacket(ThreadVars *tv, StreamTcpThread *stt, Packet *p, TcpSession *ssn, PacketQueue *pq);
 
 static int StreamTcpValidateTimestamp(TcpSession * , Packet *);
 static int StreamTcpHandleTimestamp(TcpSession * , Packet *);
@@ -1055,7 +1054,17 @@ static int StreamTcpPacketStateNone(ThreadVars *tv, Packet *p,
 
         if (TCP_GET_SACKOK(p) == 1) {
             ssn->flags |= STREAMTCP_FLAG_CLIENT_SACKOK;
-            SCLogDebug("ssn %p: SACK permited on SYN packet", ssn);
+            SCLogDebug("ssn %p: SACK permitted on SYN packet", ssn);
+        }
+
+        if (TCP_HAS_TFO(p)) {
+            ssn->flags |= STREAMTCP_FLAG_TCP_FAST_OPEN;
+            if (p->payload_len) {
+                StreamTcpUpdateNextSeq(ssn, &ssn->client, (ssn->client.next_seq + p->payload_len));
+                SCLogDebug("ssn: %p (TFO) [len: %d] isn %u base_seq %u next_seq %u payload len %u",
+                        ssn, p->tcpvars.tfo.len, ssn->client.isn, ssn->client.base_seq, ssn->client.next_seq, p->payload_len);
+                StreamTcpReassembleHandleSegment(tv, stt->ra_ctx, ssn, &ssn->client, p, pq);
+            }
         }
 
         SCLogDebug("ssn %p: ssn->client.isn %" PRIu32 ", "
@@ -1354,6 +1363,39 @@ static void StreamTcp3whsSynAckUpdate(TcpSession *ssn, Packet *p, TcpStateQueue 
     ssn->flags &=~ STREAMTCP_FLAG_4WHS;
 }
 
+/** \internal
+ *  \brief detect timestamp anomalies when processing responses to the
+ *         SYN packet.
+ *  \retval true packet is ok
+ *  \retval false packet is bad
+ */
+static inline bool StateSynSentValidateTimestamp(TcpSession *ssn, Packet *p)
+{
+    /* we only care about evil server here, so skip TS packets */
+    if (PKT_IS_TOSERVER(p) || !(TCP_HAS_TS(p))) {
+        return true;
+    }
+
+    TcpStream *receiver_stream = &ssn->client;
+    uint32_t ts_echo = TCP_GET_TSECR(p);
+    if ((receiver_stream->flags & STREAMTCP_STREAM_FLAG_TIMESTAMP) != 0) {
+        if (receiver_stream->last_ts != 0 && ts_echo != 0 &&
+            ts_echo != receiver_stream->last_ts)
+        {
+            SCLogDebug("ssn %p: BAD TSECR echo %u recv %u", ssn,
+                    ts_echo, receiver_stream->last_ts);
+            return false;
+        }
+    } else {
+        if (receiver_stream->last_ts == 0 && ts_echo != 0) {
+            SCLogDebug("ssn %p: BAD TSECR echo %u recv %u", ssn,
+                    ts_echo, receiver_stream->last_ts);
+            return false;
+        }
+    }
+    return true;
+}
+
 /**
  *  \brief  Function to handle the TCP_SYN_SENT state. The function handles
  *          SYN, SYN/ACK, RST packets and correspondingly changes the connection
@@ -1372,6 +1414,10 @@ static int StreamTcpPacketStateSynSent(ThreadVars *tv, Packet *p,
 
     SCLogDebug("ssn %p: pkt received: %s", ssn, PKT_IS_TOCLIENT(p) ?
                "toclient":"toserver");
+
+    /* check for bad responses */
+    if (StateSynSentValidateTimestamp(ssn, p) == false)
+        return -1;
 
     /* RST */
     if (p->tcph->th_flags & TH_RST) {
@@ -1504,16 +1550,31 @@ static int StreamTcpPacketStateSynSent(ThreadVars *tv, Packet *p,
             return -1;
         }
 
-        /* Check if the SYN/ACK packet ack's the earlier
-         * received SYN packet. */
-        if (!(SEQ_EQ(TCP_GET_ACK(p), ssn->client.isn + 1))) {
-            StreamTcpSetEvent(p, STREAM_3WHS_SYNACK_WITH_WRONG_ACK);
-            SCLogDebug("ssn %p: ACK mismatch, packet ACK %" PRIu32 " != "
+        if (!(TCP_HAS_TFO(p) || (ssn->flags & STREAMTCP_FLAG_TCP_FAST_OPEN))) {
+            /* Check if the SYN/ACK packet ack's the earlier
+             * received SYN packet. */
+            if (!(SEQ_EQ(TCP_GET_ACK(p), ssn->client.isn + 1))) {
+                StreamTcpSetEvent(p, STREAM_3WHS_SYNACK_WITH_WRONG_ACK);
+                SCLogDebug("ssn %p: ACK mismatch, packet ACK %" PRIu32 " != "
+                        "%" PRIu32 " from stream", ssn, TCP_GET_ACK(p),
+                        ssn->client.isn + 1);
+                return -1;
+            }
+        } else {
+            if (!(SEQ_EQ(TCP_GET_ACK(p), ssn->client.next_seq))) {
+                StreamTcpSetEvent(p, STREAM_3WHS_SYNACK_WITH_WRONG_ACK);
+                SCLogDebug("ssn %p: (TFO) ACK mismatch, packet ACK %" PRIu32 " != "
+                        "%" PRIu32 " from stream", ssn, TCP_GET_ACK(p),
+                        ssn->client.next_seq);
+                return -1;
+            }
+            SCLogDebug("ssn %p: (TFO) ACK match, packet ACK %" PRIu32 " == "
                     "%" PRIu32 " from stream", ssn, TCP_GET_ACK(p),
-                    ssn->client.isn + 1);
-            return -1;
-        }
+                    ssn->client.next_seq);
 
+            ssn->flags |= STREAMTCP_FLAG_TCP_FAST_OPEN;
+            StreamTcpPacketSetState(p, ssn, TCP_ESTABLISHED);
+        }
         StreamTcp3whsSynAckUpdate(ssn, p, /* no queue override */NULL);
 
     } else if (p->tcph->th_flags & TH_SYN) {
@@ -1857,6 +1918,9 @@ static int StreamTcpPacketStateSynRecv(ThreadVars *tv, Packet *p,
                 SCLogDebug("ssn %p: ACK received on midstream SYN/ACK "
                         "pickup session",ssn);
                 /* fall through */
+            } else if (ssn->flags & STREAMTCP_FLAG_TCP_FAST_OPEN) {
+                SCLogDebug("ssn %p: ACK received on TFO session",ssn);
+                /* fall through */
 
             } else {
                 /* if we missed traffic between the S/SA and the current
@@ -2019,11 +2083,16 @@ static int StreamTcpPacketStateSynRecv(ThreadVars *tv, Packet *p,
                     &ssn->client, p, pq);
 
         /* toclient packet: after having missed the 3whs's final ACK */
-        } else if (ack_indicates_missed_3whs_ack_packet &&
+        } else if ((ack_indicates_missed_3whs_ack_packet ||
+                    (ssn->flags & STREAMTCP_FLAG_TCP_FAST_OPEN)) &&
                 SEQ_EQ(TCP_GET_ACK(p), ssn->client.last_ack) &&
                 SEQ_EQ(TCP_GET_SEQ(p), ssn->server.next_seq))
         {
-            SCLogDebug("ssn %p: packet fits perfectly after a missed 3whs-ACK", ssn);
+            if (ack_indicates_missed_3whs_ack_packet) {
+                SCLogDebug("ssn %p: packet fits perfectly after a missed 3whs-ACK", ssn);
+            } else {
+                SCLogDebug("ssn %p: (TFO) expected packet fits perfectly after SYN/ACK", ssn);
+            }
 
             StreamTcpUpdateNextSeq(ssn, &ssn->server, (TCP_GET_SEQ(p) + p->payload_len));
 
@@ -4670,6 +4739,25 @@ static inline int StreamTcpStateDispatch(ThreadVars *tv, Packet *p,
     return 0;
 }
 
+static inline void HandleThreadId(ThreadVars *tv, Packet *p, StreamTcpThread *stt)
+{
+    const int idx = (!(PKT_IS_TOSERVER(p)));
+
+    /* assign the thread id to the flow */
+    if (unlikely(p->flow->thread_id[idx] == 0)) {
+        p->flow->thread_id[idx] = (FlowThreadId)tv->id;
+    } else if (unlikely((FlowThreadId)tv->id != p->flow->thread_id[idx])) {
+        SCLogDebug("wrong thread: flow has %u, we are %d", p->flow->thread_id[idx], tv->id);
+        if (p->pkt_src == PKT_SRC_WIRE) {
+            StatsIncr(tv, stt->counter_tcp_wrong_thread);
+            if ((p->flow->flags & FLOW_WRONG_THREAD) == 0) {
+                p->flow->flags |= FLOW_WRONG_THREAD;
+                StreamTcpSetEvent(p, STREAM_WRONG_THREAD);
+            }
+        }
+    }
+}
+
 /* flow is and stays locked */
 int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
                      PacketQueue *pq)
@@ -4680,19 +4768,7 @@ int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
 
     SCLogDebug("p->pcap_cnt %"PRIu64, p->pcap_cnt);
 
-    /* assign the thread id to the flow */
-    if (unlikely(p->flow->thread_id == 0)) {
-        p->flow->thread_id = (FlowThreadId)tv->id;
-    } else if (unlikely((FlowThreadId)tv->id != p->flow->thread_id)) {
-        SCLogDebug("wrong thread: flow has %u, we are %d", p->flow->thread_id, tv->id);
-        if (p->pkt_src == PKT_SRC_WIRE) {
-            StatsIncr(tv, stt->counter_tcp_wrong_thread);
-            if ((p->flow->flags & FLOW_WRONG_THREAD) == 0) {
-                p->flow->flags |= FLOW_WRONG_THREAD;
-                StreamTcpSetEvent(p, STREAM_WRONG_THREAD);
-            }
-        }
-    }
+    HandleThreadId(tv, p, stt);
 
     TcpSession *ssn = (TcpSession *)p->flow->protoctx;
 
@@ -4727,6 +4803,7 @@ int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
     /* broken TCP http://ask.wireshark.org/questions/3183/acknowledgment-number-broken-tcp-the-acknowledge-field-is-nonzero-while-the-ack-flag-is-not-set */
     if (!(p->tcph->th_flags & TH_ACK) && TCP_GET_ACK(p) != 0) {
         StreamTcpSetEvent(p, STREAM_PKT_BROKEN_ACK);
+        goto error;
     }
 
     /* If we are on IPS mode, and got a drop action triggered from
@@ -4840,7 +4917,7 @@ int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
         /* check for conditions that may make us not want to log this packet */
 
         /* streams that hit depth */
-        if ((ssn->client.flags & STREAMTCP_STREAM_FLAG_DEPTH_REACHED) &&
+        if ((ssn->client.flags & STREAMTCP_STREAM_FLAG_DEPTH_REACHED) ||
              (ssn->server.flags & STREAMTCP_STREAM_FLAG_DEPTH_REACHED))
         {
             /* we can call bypass callback, if enabled */
@@ -5889,121 +5966,6 @@ Packet *StreamTcpPseudoSetup(Packet *parent, uint8_t *pkt, uint32_t len)
     return p;
 }
 
-/**
- * \brief   Function to setup the IP and TCP header of the pseudo packet from
- *          the newly copied raw packet contents of the parent.
- *
- * @param np    pointer to the pseudo packet
- * @param p     pointer to the original packet
- */
-static void StreamTcpPseudoPacketSetupHeader(Packet *np, Packet *p)
-{
-    /* Setup the IP header */
-    if (PKT_IS_IPV4(p)) {
-        np->ip4h = (IPV4Hdr *)((uint8_t *)GET_PKT_DATA(np) + (GET_PKT_LEN(np) - IPV4_GET_IPLEN(p)));
-        PSEUDO_PKT_SET_IPV4HDR(np->ip4h, p->ip4h);
-
-        /* Similarly setup the TCP header with ports in opposite direction */
-        np->tcph = (TCPHdr *)((uint8_t *)np->ip4h + IPV4_GET_HLEN(np));
-
-        PSEUDO_PKT_SET_TCPHDR(np->tcph, p->tcph);
-
-        /* Setup the adress and port details */
-        SET_IPV4_SRC_ADDR(p, &np->dst);
-        SET_IPV4_DST_ADDR(p, &np->src);
-        SET_TCP_SRC_PORT(p, &np->dp);
-        SET_TCP_DST_PORT(p, &np->sp);
-
-    } else if (PKT_IS_IPV6(p)) {
-        np->ip6h = (IPV6Hdr *)((uint8_t *)GET_PKT_DATA(np) + (GET_PKT_LEN(np) - IPV6_GET_PLEN(p) - IPV6_HEADER_LEN));
-        PSEUDO_PKT_SET_IPV6HDR(np->ip6h, p->ip6h);
-
-        /* Similarly setup the TCP header with ports in opposite direction */
-        np->tcph = (TCPHdr *)((uint8_t *)np->ip6h + IPV6_HEADER_LEN);
-        PSEUDO_PKT_SET_TCPHDR(np->tcph, p->tcph);
-
-        /* Setup the adress and port details */
-        SET_IPV6_SRC_ADDR(p, &np->dst);
-        SET_IPV6_DST_ADDR(p, &np->src);
-        SET_TCP_SRC_PORT(p, &np->dp);
-        SET_TCP_DST_PORT(p, &np->sp);
-    }
-
-    /* we don't need a payload (if any) */
-    np->payload = NULL;
-    np->payload_len = 0;
-}
-
-/** \brief Create a pseudo packet injected into the engine to signal the
- *         opposing direction of this stream to wrap up stream reassembly.
- *
- *  \param p real packet
- *  \param pq packet queue to store the new pseudo packet in
- */
-void StreamTcpPseudoPacketCreateStreamEndPacket(ThreadVars *tv, StreamTcpThread *stt, Packet *p, TcpSession *ssn, PacketQueue *pq)
-{
-    SCEnter();
-
-    if (p->flags & PKT_PSEUDO_STREAM_END) {
-        SCReturn;
-    }
-
-    /* no need for a pseudo packet if there is nothing left to reassemble */
-    if (RB_EMPTY(&ssn->server.seg_tree) && RB_EMPTY(&ssn->client.seg_tree)) {
-        SCReturn;
-    }
-
-    Packet *np = StreamTcpPseudoSetup(p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-    if (np == NULL) {
-        SCLogDebug("The packet received from packet allocation is NULL");
-        StatsIncr(tv, stt->counter_tcp_pseudo_failed);
-        SCReturn;
-    }
-    PKT_SET_SRC(np, PKT_SRC_STREAM_TCP_STREAM_END_PSEUDO);
-
-    /* Setup the IP and TCP headers */
-    StreamTcpPseudoPacketSetupHeader(np,p);
-
-    np->tenant_id = p->flow->tenant_id;
-
-    np->flowflags = p->flowflags;
-
-    np->flags |= PKT_STREAM_EST;
-    np->flags |= PKT_STREAM_EOF;
-    np->flags |= PKT_HAS_FLOW;
-    np->flags |= PKT_PSEUDO_STREAM_END;
-
-    if (p->flags & PKT_NOPACKET_INSPECTION) {
-        DecodeSetNoPacketInspectionFlag(np);
-    }
-    if (p->flags & PKT_NOPAYLOAD_INSPECTION) {
-        DecodeSetNoPayloadInspectionFlag(np);
-    }
-
-    if (PKT_IS_TOSERVER(p)) {
-        SCLogDebug("original is to_server, so pseudo is to_client");
-        np->flowflags &= ~FLOW_PKT_TOSERVER;
-        np->flowflags |= FLOW_PKT_TOCLIENT;
-#ifdef DEBUG
-        BUG_ON(!(PKT_IS_TOCLIENT(np)));
-        BUG_ON((PKT_IS_TOSERVER(np)));
-#endif
-    } else if (PKT_IS_TOCLIENT(p)) {
-        SCLogDebug("original is to_client, so pseudo is to_server");
-        np->flowflags &= ~FLOW_PKT_TOCLIENT;
-        np->flowflags |= FLOW_PKT_TOSERVER;
-#ifdef DEBUG
-        BUG_ON(!(PKT_IS_TOSERVER(np)));
-        BUG_ON((PKT_IS_TOCLIENT(np)));
-#endif
-    }
-
-    PacketEnqueue(pq, np);
-
-    StatsIncr(tv, stt->counter_tcp_pseudo);
-    SCReturn;
-}
-
 /** \brief Create a pseudo packet injected into the engine to signal the
  *         opposing direction of this stream trigger detection/logging.
  *
@@ -6968,7 +6930,7 @@ static int StreamTcpTest10 (void)
 
     tcph.th_win = htons(5480);
     tcph.th_seq = htonl(10);
-    tcph.th_ack = htonl(11);
+    tcph.th_ack = 0;
     tcph.th_flags = TH_SYN;
     p->tcph = &tcph;
 
@@ -10256,119 +10218,6 @@ end:
     return ret;
 }
 
-static int StreamTcpTest40(void)
-{
-    uint8_t raw_vlan[] = {
-        0x00, 0x20, 0x08, 0x00, 0x45, 0x00, 0x00, 0x34,
-        0x3b, 0x36, 0x40, 0x00, 0x40, 0x06, 0xb7, 0xc9,
-        0x83, 0x97, 0x20, 0x81, 0x83, 0x97, 0x20, 0x15,
-        0x04, 0x8a, 0x17, 0x70, 0x4e, 0x14, 0xdf, 0x55,
-        0x4d, 0x3d, 0x5a, 0x61, 0x80, 0x10, 0x6b, 0x50,
-        0x3c, 0x4c, 0x00, 0x00, 0x01, 0x01, 0x08, 0x0a,
-        0x00, 0x04, 0xf0, 0xc8, 0x01, 0x99, 0xa3, 0xf3
-    };
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
-    FAIL_IF(unlikely(p == NULL));
-    ThreadVars tv;
-    DecodeThreadVars dtv;
-
-    memset(&tv, 0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
-    PACKET_INITIALIZE(p);
-
-    SET_PKT_LEN(p, sizeof(raw_vlan));
-    memcpy(GET_PKT_DATA(p), raw_vlan, sizeof(raw_vlan));
-    memset(&dtv, 0, sizeof(DecodeThreadVars));
-
-    FlowInitConfig(FLOW_QUIET);
-
-    DecodeVLAN(&tv, &dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p), NULL);
-
-    FAIL_IF(p->vlan_id[0] == 0);
-
-    FAIL_IF(p->tcph == NULL);
-
-    Packet *np = StreamTcpPseudoSetup(p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-    FAIL_IF(np == NULL);
-
-    StreamTcpPseudoPacketSetupHeader(np,p);
-
-    FAIL_IF(((uint8_t *)p->tcph - (uint8_t *)p->ip4h) != ((uint8_t *)np->tcph - (uint8_t *)np->ip4h));
-
-    PACKET_DESTRUCTOR(np);
-    PACKET_DESTRUCTOR(p);
-    FlowShutdown();
-    PacketFree(np);
-    PacketFree(p);
-    PASS;
-}
-
-static int StreamTcpTest41(void)
-{
-    /* IPV6/TCP/no eth header */
-    uint8_t raw_ip[] = {
-        0x60, 0x00, 0x00, 0x00, 0x00, 0x28, 0x06, 0x40,
-        0x20, 0x01, 0x06, 0x18, 0x04, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x51, 0x99, 0xcc, 0x70,
-        0x20, 0x01, 0x06, 0x18, 0x00, 0x01, 0x80, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
-        0x8c, 0x9b, 0x00, 0x50, 0x6a, 0xe7, 0x07, 0x36,
-        0x00, 0x00, 0x00, 0x00, 0xa0, 0x02, 0x16, 0x30,
-        0x29, 0x9c, 0x00, 0x00, 0x02, 0x04, 0x05, 0x8c,
-        0x04, 0x02, 0x08, 0x0a, 0x00, 0xdd, 0x1a, 0x39,
-        0x00, 0x00, 0x00, 0x00, 0x01, 0x03, 0x03, 0x02 };
-    Packet *p = SCMalloc(SIZE_OF_PACKET);
-    if (unlikely(p == NULL))
-        return 0;
-    ThreadVars tv;
-    DecodeThreadVars dtv;
-
-    memset(&dtv, 0, sizeof(DecodeThreadVars));
-    memset(&tv,  0, sizeof(ThreadVars));
-    memset(p, 0, SIZE_OF_PACKET);
-    PACKET_INITIALIZE(p);
-
-    if (PacketCopyData(p, raw_ip, sizeof(raw_ip)) == -1) {
-        PacketFree(p);
-        return 1;
-    }
-
-    FlowInitConfig(FLOW_QUIET);
-
-    DecodeRaw(&tv, &dtv, p, raw_ip, GET_PKT_LEN(p), NULL);
-
-    if (p->ip6h == NULL) {
-        printf("expected a valid ipv6 header but it was NULL: ");
-        FlowShutdown();
-        SCFree(p);
-        return 1;
-    }
-
-    if(p->tcph == NULL) {
-        SCFree(p);
-        return 0;
-    }
-
-    Packet *np = StreamTcpPseudoSetup(p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-    if (np == NULL) {
-        printf("the packet received from packet allocation is NULL: ");
-        return 0;
-    }
-
-    StreamTcpPseudoPacketSetupHeader(np,p);
-
-    if (((uint8_t *)p->tcph - (uint8_t *)p->ip6h) != ((uint8_t *)np->tcph - (uint8_t *)np->ip6h)) {
-        return 0;
-    }
-
-    PACKET_RECYCLE(np);
-    PACKET_RECYCLE(p);
-    SCFree(p);
-    FlowShutdown();
-
-    return 1;
-}
-
 /** \test multiple different SYN/ACK, pick first */
 static int StreamTcpTest42 (void)
 {
@@ -10818,9 +10667,6 @@ void StreamTcpRegisterTests (void)
 
     UtRegisterTest("StreamTcpTest38 -- validate ACK", StreamTcpTest38);
     UtRegisterTest("StreamTcpTest39 -- update next_seq", StreamTcpTest39);
-
-    UtRegisterTest("StreamTcpTest40 -- pseudo setup", StreamTcpTest40);
-    UtRegisterTest("StreamTcpTest41 -- pseudo setup", StreamTcpTest41);
 
     UtRegisterTest("StreamTcpTest42 -- SYN/ACK queue", StreamTcpTest42);
     UtRegisterTest("StreamTcpTest43 -- SYN/ACK queue", StreamTcpTest43);

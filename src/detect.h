@@ -57,6 +57,10 @@
 
 #define DETECT_TRANSFORMS_MAX 16
 
+/** default rule priority if not set through priority keyword or via
+ *  classtype. */
+#define DETECT_DEFAULT_PRIO 3
+
 /* forward declarations for the structures from detect-engine-sigorder.h */
 struct SCSigOrderFunc_;
 struct SCSigSignatureWrapper_;
@@ -249,14 +253,15 @@ typedef struct DetectPort_ {
 #define SIG_FLAG_HAS_TARGET             (SIG_FLAG_DEST_IS_TARGET|SIG_FLAG_SRC_IS_TARGET)
 
 /* signature init flags */
-#define SIG_FLAG_INIT_DEONLY                (1<<0)  /**< decode event only signature */
-#define SIG_FLAG_INIT_PACKET                (1<<1)  /**< signature has matches against a packet (as opposed to app layer) */
-#define SIG_FLAG_INIT_FLOW                  (1<<2)  /**< signature has a flow setting */
-#define SIG_FLAG_INIT_BIDIREC               (1<<3)  /**< signature has bidirectional operator */
-#define SIG_FLAG_INIT_FIRST_IPPROTO_SEEN    (1<<4)  /** < signature has seen the first ip_proto keyword */
-#define SIG_FLAG_INIT_HAS_TRANSFORM         (1<<5)
-#define SIG_FLAG_INIT_STATE_MATCH           (1<<6)  /**< signature has matches that require stateful inspection */
-#define SIG_FLAG_INIT_NEED_FLUSH            (1<<7)
+#define SIG_FLAG_INIT_DEONLY                BIT_U32(0)  /**< decode event only signature */
+#define SIG_FLAG_INIT_PACKET                BIT_U32(1)  /**< signature has matches against a packet (as opposed to app layer) */
+#define SIG_FLAG_INIT_FLOW                  BIT_U32(2)  /**< signature has a flow setting */
+#define SIG_FLAG_INIT_BIDIREC               BIT_U32(3)  /**< signature has bidirectional operator */
+#define SIG_FLAG_INIT_FIRST_IPPROTO_SEEN    BIT_U32(4)  /** < signature has seen the first ip_proto keyword */
+#define SIG_FLAG_INIT_HAS_TRANSFORM         BIT_U32(5)
+#define SIG_FLAG_INIT_STATE_MATCH           BIT_U32(6)  /**< signature has matches that require stateful inspection */
+#define SIG_FLAG_INIT_NEED_FLUSH            BIT_U32(7)
+#define SIG_FLAG_INIT_PRIO_EXPLICT          BIT_U32(8)  /**< priority is explicitly set by the priority keyword */
 
 /* signature mask flags */
 /** \note: additions should be added to the rule analyzer as well */
@@ -534,7 +539,7 @@ typedef struct Signature_ {
     DetectProto proto;
 
     /** classification id **/
-    uint8_t class;
+    uint16_t class_id;
 
     /** ipv4 match arrays */
     uint16_t addr_dst_match4_cnt;
@@ -859,6 +864,7 @@ typedef struct DetectEngineCtx_ {
     /** Store rule file and line so that parsers can use them in errors. */
     char *rule_file;
     int rule_line;
+    bool sigerror_silent;
     const char *sigerror;
 
     /** list of keywords that need thread local ctxs */
@@ -938,6 +944,7 @@ typedef struct DetectEngineCtx_ {
      *  set for it. If true, the setup function will have to
      *  run. */
     bool sm_types_prefilter[DETECT_TBLSIZE];
+    bool sm_types_silent_error[DETECT_TBLSIZE];
 
 } DetectEngineCtx;
 
@@ -1386,6 +1393,8 @@ typedef struct SigGroupHead_ {
 #define SIGMATCH_INFO_STICKY_BUFFER     BIT_U16(9)
 /** keyword is deprecated: used to suggest an alternative */
 #define SIGMATCH_INFO_DEPRECATED        BIT_U16(10)
+/** strict parsing is enabled */
+#define SIGMATCH_STRICT_PARSING         BIT_U16(11)
 
 enum DetectEngineTenantSelectors
 {

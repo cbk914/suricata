@@ -66,21 +66,6 @@
 
 #include "source-pcap-file.h"
 
-#ifndef HAVE_LIBJANSSON
-
-/** Handle the case where no JSON support is compiled in.
- *
- */
-
-int OutputJsonOpenFileCtx(LogFileCtx *, char *);
-
-void OutputJsonRegister (void)
-{
-    SCLogDebug("Can't register JSON output - JSON support was disabled during build.");
-}
-
-#else /* implied we do have JSON support */
-
 #define DEFAULT_LOG_FILENAME "eve.json"
 #define DEFAULT_ALERT_SYSLOG_FACILITY_STR       "local0"
 #define DEFAULT_ALERT_SYSLOG_FACILITY           LOG_LOCAL0
@@ -1070,7 +1055,8 @@ OutputInitResult OutputJsonInitCtx(ConfNode *conf)
         const char *pcapfile_s = ConfNodeLookupChildValue(conf, "pcap-file");
         if (pcapfile_s != NULL && ConfValIsTrue(pcapfile_s)) {
             json_ctx->file_ctx->is_pcap_offline =
-                (RunmodeGetCurrent() == RUNMODE_PCAP_FILE);
+                (RunmodeGetCurrent() == RUNMODE_PCAP_FILE ||
+                 RunmodeGetCurrent() == RUNMODE_UNIX_SOCKET);
         }
 
         json_ctx->file_ctx->type = json_ctx->json_out;
@@ -1100,5 +1086,3 @@ static void OutputJsonDeInitCtx(OutputCtx *output_ctx)
     SCFree(json_ctx);
     SCFree(output_ctx);
 }
-
-#endif

@@ -17,16 +17,16 @@
 
 // written by Pierre Chifflier  <chifflier@wzdftpd.net>
 
-use ikev2::ipsec_parser::*;
-use ikev2::state::IKEV2ConnectionState;
-use core;
-use core::{AppProto,Flow,ALPROTO_UNKNOWN,ALPROTO_FAILED,STREAM_TOSERVER,STREAM_TOCLIENT};
-use applayer;
-use parser::*;
+use crate::ikev2::ipsec_parser::*;
+use crate::ikev2::state::IKEV2ConnectionState;
+use crate::core;
+use crate::core::{AppProto,Flow,ALPROTO_UNKNOWN,ALPROTO_FAILED,STREAM_TOSERVER,STREAM_TOCLIENT};
+use crate::applayer;
+use crate::parser::*;
 use std;
 use std::ffi::{CStr,CString};
 
-use log::*;
+use crate::log::*;
 
 use nom;
 
@@ -730,6 +730,8 @@ pub unsafe extern "C" fn rs_register_ikev2_parser() {
         set_tx_mpm_id      : None,
         get_files          : None,
         get_tx_iterator    : None,
+        get_tx_detect_flags: None,
+        set_tx_detect_flags: None,
     };
 
     let ip_proto_str = CString::new("udp").unwrap();

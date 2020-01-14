@@ -24,12 +24,12 @@ use nom::be_u32;
 use der_parser::der_read_element_header;
 use kerberos_parser::krb5_parser;
 use kerberos_parser::krb5::{EncryptionType,ErrorCode,MessageType,PrincipalName,Realm};
-use applayer;
-use core;
-use core::{AppProto,Flow,ALPROTO_FAILED,ALPROTO_UNKNOWN,STREAM_TOCLIENT,STREAM_TOSERVER,sc_detect_engine_state_free};
-use parser::*;
+use crate::applayer;
+use crate::core;
+use crate::core::{AppProto,Flow,ALPROTO_FAILED,ALPROTO_UNKNOWN,STREAM_TOCLIENT,STREAM_TOSERVER,sc_detect_engine_state_free};
+use crate::parser::*;
 
-use log::*;
+use crate::log::*;
 
 #[repr(u32)]
 pub enum KRB5Event {
@@ -89,6 +89,7 @@ pub struct KRB5Transaction {
     events: *mut core::AppLayerDecoderEvents,
 
     logged: applayer::LoggerFlags,
+    detect_flags: applayer::TxDetectFlags,
 }
 
 pub fn to_hex_string(bytes: &[u8]) -> String {
@@ -240,6 +241,7 @@ impl KRB5Transaction {
             de_state: None,
             events: std::ptr::null_mut(),
             logged: applayer::LoggerFlags::new(),
+            detect_flags: applayer::TxDetectFlags::default(),
         }
     }
 }
@@ -633,6 +635,8 @@ pub extern "C" fn rs_krb5_parse_response_tcp(_flow: *const core::Flow,
     status
 }
 
+export_tx_detect_flags_set!(rs_krb5_tx_detect_flags_set, KRB5Transaction);
+export_tx_detect_flags_get!(rs_krb5_tx_detect_flags_get, KRB5Transaction);
 
 const PARSER_NAME : &'static [u8] = b"krb5\0";
 
@@ -669,6 +673,8 @@ pub unsafe extern "C" fn rs_register_krb5_parser() {
         set_tx_mpm_id      : None,
         get_files          : None,
         get_tx_iterator    : None,
+        get_tx_detect_flags: Some(rs_krb5_tx_detect_flags_get),
+        set_tx_detect_flags: Some(rs_krb5_tx_detect_flags_set),
     };
     // register UDP parser
     let ip_proto_str = CString::new("udp").unwrap();

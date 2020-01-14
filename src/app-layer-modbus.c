@@ -274,6 +274,26 @@ static LoggerId ModbusGetTxLogged(void *alstate, void *vtx)
     return tx->logged;
 }
 
+static void ModbusSetTxDetectFlags(void *vtx, uint8_t dir, uint64_t flags)
+{
+    ModbusTransaction *tx = (ModbusTransaction *)vtx;
+    if (dir & STREAM_TOSERVER) {
+        tx->detect_flags_ts = flags;
+    } else {
+        tx->detect_flags_ts = flags;
+    }
+}
+
+static uint64_t ModbusGetTxDetectFlags(void *vtx, uint8_t dir)
+{
+    ModbusTransaction *tx = (ModbusTransaction *)vtx;
+    if (dir & STREAM_TOSERVER) {
+        return tx->detect_flags_ts;
+    } else {
+        return tx->detect_flags_tc;
+    }
+}
+
 static uint64_t ModbusGetTxCnt(void *alstate)
 {
     return ((uint64_t) ((ModbusState *) alstate)->transaction_max);
@@ -418,7 +438,7 @@ static void ModbusStateTxFree(void *state, uint64_t tx_id)
  */
 static int ModbusExtractUint8(ModbusState   *modbus,
                               uint8_t       *res,
-                              uint8_t       *input,
+                              const uint8_t *input,
                               uint32_t      input_len,
                               uint16_t      *offset) {
     SCEnter();
@@ -442,7 +462,7 @@ static int ModbusExtractUint8(ModbusState   *modbus,
  */
 static int ModbusExtractUint16(ModbusState  *modbus,
                                uint16_t     *res,
-                               uint8_t      *input,
+                               const uint8_t *input,
                                uint32_t     input_len,
                                uint16_t     *offset) {
     SCEnter();
@@ -513,7 +533,7 @@ static void ModbusCheckHeader(ModbusState       *modbus,
  */
 static void ModbusExceptionResponse(ModbusTransaction   *tx,
                                     ModbusState         *modbus,
-                                    uint8_t             *input,
+                                    const uint8_t       *input,
                                     uint32_t            input_len,
                                     uint16_t            *offset)
 {
@@ -566,7 +586,7 @@ static void ModbusExceptionResponse(ModbusTransaction   *tx,
  */
 static void ModbusParseReadRequest(ModbusTransaction   *tx,
                                    ModbusState         *modbus,
-                                   uint8_t             *input,
+                                   const uint8_t       *input,
                                    uint32_t            input_len,
                                    uint16_t            *offset)
 {
@@ -619,7 +639,7 @@ end:
  */
 static void ModbusParseReadResponse(ModbusTransaction   *tx,
                                     ModbusState         *modbus,
-                                    uint8_t             *input,
+                                    const uint8_t       *input,
                                     uint32_t            input_len,
                                     uint16_t            *offset)
 {
@@ -669,7 +689,7 @@ end:
  */
 static int ModbusParseWriteRequest(ModbusTransaction   *tx,
                                    ModbusState         *modbus,
-                                   uint8_t             *input,
+                                   const uint8_t       *input,
                                    uint32_t            input_len,
                                    uint16_t            *offset)
 {
@@ -796,7 +816,7 @@ end:
  */
 static void ModbusParseWriteResponse(ModbusTransaction   *tx,
                                      ModbusState         *modbus,
-                                     uint8_t             *input,
+                                     const uint8_t       *input,
                                      uint32_t            input_len,
                                      uint16_t            *offset)
 {
@@ -895,7 +915,7 @@ end:
  */
 static int ModbusParseDiagnosticRequest(ModbusTransaction   *tx,
                                         ModbusState         *modbus,
-                                        uint8_t             *input,
+                                        const uint8_t       *input,
                                         uint32_t            input_len,
                                         uint16_t            *offset)
 {
@@ -993,7 +1013,7 @@ static ModbusFunctionCodeRange modbusFunctionCodeRanges[] = {
  */
 static void ModbusParseRequestPDU(ModbusTransaction *tx,
                                   ModbusState       *modbus,
-                                  uint8_t           *input,
+                                  const uint8_t     *input,
                                   uint32_t          input_len)
 {
     SCEnter();
@@ -1150,7 +1170,7 @@ end:
  */
 static void ModbusParseResponsePDU(ModbusTransaction    *tx,
                                    ModbusState          *modbus,
-                                   uint8_t              *input,
+                                   const uint8_t        *input,
                                    uint32_t             input_len)
 {
     SCEnter();
@@ -1223,7 +1243,7 @@ end:
  */
 static int ModbusParseHeader(ModbusState   *modbus,
                              ModbusHeader  *header,
-                             uint8_t       *input,
+                             const uint8_t *input,
                              uint32_t      input_len)
 {
     SCEnter();
@@ -1270,7 +1290,7 @@ static int ModbusParseHeader(ModbusState   *modbus,
 static int ModbusParseRequest(Flow                  *f,
                               void                  *state,
                               AppLayerParserState   *pstate,
-                              uint8_t               *input,
+                              const uint8_t         *input,
                               uint32_t              input_len,
                               void                  *local_data,
                               const uint8_t         flags)
@@ -1288,7 +1308,7 @@ static int ModbusParseRequest(Flow                  *f,
 
     while (input_len > 0) {
         uint32_t    adu_len = input_len;
-        uint8_t     *adu = input;
+        const uint8_t     *adu = input;
 
         /* Extract MODBUS Header */
         if (ModbusParseHeader(modbus, &header, adu, adu_len))
@@ -1335,7 +1355,7 @@ static int ModbusParseRequest(Flow                  *f,
 static int ModbusParseResponse(Flow                 *f,
                                void                 *state,
                                AppLayerParserState  *pstate,
-                               uint8_t              *input,
+                               const uint8_t        *input,
                                uint32_t             input_len,
                                void                 *local_data,
                                const uint8_t        flags)
@@ -1353,7 +1373,7 @@ static int ModbusParseResponse(Flow                 *f,
 
     while (input_len > 0) {
         uint32_t    adu_len = input_len;
-        uint8_t     *adu = input;
+        const uint8_t     *adu = input;
 
         /* Extract MODBUS Header */
         if (ModbusParseHeader(modbus, &header, adu, adu_len))
@@ -1434,7 +1454,7 @@ static void ModbusStateFree(void *state)
 
 static uint16_t ModbusProbingParser(Flow *f,
                                     uint8_t direction,
-                                    uint8_t     *input,
+                                    const uint8_t *input,
                                     uint32_t    input_len,
                                     uint8_t *rdir)
 {
@@ -1482,14 +1502,14 @@ void RegisterModbusParsers(void)
                                           ALPROTO_MODBUS,
                                           0, sizeof(ModbusHeader),
                                           STREAM_TOSERVER,
-                                          ModbusProbingParser, NULL);
+                                          ModbusProbingParser, ModbusProbingParser);
         } else {
             /* If there is no app-layer section for Modbus, silently
              * leave it disabled. */
             if (!AppLayerProtoDetectPPParseConfPorts("tcp", IPPROTO_TCP,
                                                 proto_name, ALPROTO_MODBUS,
                                                 0, sizeof(ModbusHeader),
-                                                ModbusProbingParser, NULL)) {
+                                                ModbusProbingParser, ModbusProbingParser)) {
 #ifndef AFLFUZZ_APPLAYER
                 return;
 #endif
@@ -1547,6 +1567,8 @@ void RegisterModbusParsers(void)
         AppLayerParserRegisterGetEventInfoById(IPPROTO_TCP, ALPROTO_MODBUS, ModbusStateGetEventInfoById);
 
         AppLayerParserRegisterParserAcceptableDataDirection(IPPROTO_TCP, ALPROTO_MODBUS, STREAM_TOSERVER);
+        AppLayerParserRegisterDetectFlagsFuncs(IPPROTO_TCP, ALPROTO_MODBUS,
+                ModbusGetTxDetectFlags, ModbusSetTxDetectFlags);
 
         AppLayerParserSetStreamDepth(IPPROTO_TCP, ALPROTO_MODBUS, stream_depth);
     } else {

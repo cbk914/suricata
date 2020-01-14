@@ -144,6 +144,24 @@ Example::
 ``startswith`` cannot be mixed with ``depth``, ``offset``, ``within`` or
 ``distance`` for the same pattern.
 
+endswith
+--------
+
+The ``endswith`` keyword is similar to ``isdataat:!1,relative;``. It takes no
+arguments and must follow a ``content`` keyword. It modifies the ``content`` to
+match exactly at the end of a buffer.
+
+Example::
+
+    content:".php"; endswith;
+
+``endswith`` is a short hand notation for::
+
+    content:".php"; isdatat:!1,relative;
+
+``endswith`` cannot be mixed with ``offset``, ``within`` or
+``distance`` for the same pattern.
+
 offset
 ------
 
@@ -246,6 +264,21 @@ You can also use the negation (!) before isdataat.
 
 .. image:: payload-keywords/isdataat1.png
 
+bsize
+-----
+
+With the bsize keyword, you can match on the length of the buffer. This adds precision to the content match, previously this could have been done with isdataat.
+
+Format::
+
+  bsize:<number>;
+
+Example of bsize in a rule:
+
+.. container:: example-rule
+
+   alert dns any any -> any any (msg:"test bsize rule"; dns.query; content:"google.com"; bsize:10; sid:123; rev:1;)
+
 dsize
 -----
 
@@ -258,7 +291,7 @@ Format::
 
   dsize:<number>;
 
-example of dsize in a rule:
+Example of dsize in a rule:
 
 .. container:: example-rule
 

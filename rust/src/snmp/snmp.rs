@@ -17,16 +17,16 @@
 
 // written by Pierre Chifflier  <chifflier@wzdftpd.net>
 
-use snmp::snmp_parser::*;
-use core;
-use core::{AppProto,Flow,ALPROTO_UNKNOWN,ALPROTO_FAILED,STREAM_TOSERVER,STREAM_TOCLIENT};
-use applayer;
-use parser::*;
+use crate::snmp::snmp_parser::*;
+use crate::core;
+use crate::core::{AppProto,Flow,ALPROTO_UNKNOWN,ALPROTO_FAILED,STREAM_TOSERVER,STREAM_TOCLIENT};
+use crate::applayer;
+use crate::parser::*;
 use std;
 use std::ffi::{CStr,CString};
 use std::mem::transmute;
 
-use log::*;
+use crate::log::*;
 
 use der_parser::{DerObjectContent,parse_der_sequence};
 use der_parser::oid::Oid;
@@ -97,6 +97,7 @@ pub struct SNMPTransaction {
     events: *mut core::AppLayerDecoderEvents,
 
     logged: applayer::LoggerFlags,
+    detect_flags: applayer::TxDetectFlags,
 }
 
 
@@ -274,6 +275,7 @@ impl SNMPTransaction {
             de_state: None,
             events: std::ptr::null_mut(),
             logged: applayer::LoggerFlags::new(),
+            detect_flags: applayer::TxDetectFlags::default(),
         }
     }
 
@@ -572,6 +574,9 @@ pub extern "C" fn rs_snmp_probing_parser(_flow: *const Flow,
     }
 }
 
+export_tx_detect_flags_set!(rs_snmp_set_tx_detect_flags, SNMPTransaction);
+export_tx_detect_flags_get!(rs_snmp_get_tx_detect_flags, SNMPTransaction);
+
 const PARSER_NAME : &'static [u8] = b"snmp\0";
 
 #[no_mangle]
@@ -607,6 +612,8 @@ pub unsafe extern "C" fn rs_register_snmp_parser() {
         set_tx_mpm_id      : None,
         get_files          : None,
         get_tx_iterator    : None,
+        get_tx_detect_flags: Some(rs_snmp_get_tx_detect_flags),
+        set_tx_detect_flags: Some(rs_snmp_set_tx_detect_flags),
     };
     let ip_proto_str = CString::new("udp").unwrap();
     if AppLayerProtoDetectConfProtoDetectionEnabled(ip_proto_str.as_ptr(), parser.name) != 0 {

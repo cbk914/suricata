@@ -171,6 +171,13 @@ void DetectAppLayerInspectEngineRegister(const char *name,
         AppProto alproto, uint32_t dir,
         int progress, InspectEngineFuncPtr Callback)
 {
+    if (AppLayerParserIsTxAware(alproto)) {
+        if (!AppLayerParserSupportsTxDetectFlags(alproto)) {
+            FatalError(SC_ERR_INITIALIZATION,
+                "Inspect engine registered for app-layer protocol without "
+                "TX detect flag support: %s", AppProtoToString(alproto));
+        }
+    }
     DetectBufferTypeRegister(name);
     const int sm_list = DetectBufferTypeGetByName(name);
     if (sm_list == -1) {
@@ -630,6 +637,7 @@ next:
         }
 
         if (s->init_data->init_flags & SIG_FLAG_INIT_NEED_FLUSH) {
+            SCLogDebug("set SIG_FLAG_FLUSH on %u", s->id);
             s->flags |= SIG_FLAG_FLUSH;
         }
     }
@@ -1725,6 +1733,7 @@ static void InjectPackets(ThreadVars **detect_tvs,
                 Packet *p = PacketGetFromAlloc();
                 if (p != NULL) {
                     p->flags |= PKT_PSEUDO_STREAM_END;
+                    PKT_SET_SRC(p, PKT_SRC_DETECT_RELOAD_FLUSH);
                     PacketQueue *q = &trans_q[detect_tvs[i]->inq->id];
                     SCMutexLock(&q->mutex_q);
                     PacketEnqueue(q, p);
