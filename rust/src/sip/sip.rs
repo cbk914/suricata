@@ -19,13 +19,13 @@
 
 extern crate nom;
 
-use applayer;
-use conf;
-use core;
-use core::{sc_detect_engine_state_free, AppProto, Flow, ALPROTO_UNKNOWN};
-use log::*;
-use parser::*;
-use sip::parser::*;
+use crate::applayer;
+use crate::conf;
+use crate::core;
+use crate::core::{sc_detect_engine_state_free, AppProto, Flow, ALPROTO_UNKNOWN};
+use crate::log::*;
+use crate::parser::*;
+use crate::sip::parser::*;
 use std;
 use std::ffi::{CStr, CString};
 
@@ -396,8 +396,8 @@ pub unsafe extern "C" fn rs_sip_register_parser() {
         name: PARSER_NAME.as_ptr() as *const std::os::raw::c_char,
         default_port: default_port.as_ptr(),
         ipproto: core::IPPROTO_UDP,
-        probe_ts: rs_sip_probing_parser_ts,
-        probe_tc: rs_sip_probing_parser_tc,
+        probe_ts: Some(rs_sip_probing_parser_ts),
+        probe_tc: Some(rs_sip_probing_parser_tc),
         min_depth: 0,
         max_depth: 16,
         state_new: rs_sip_state_new,

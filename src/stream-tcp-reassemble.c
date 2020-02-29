@@ -874,6 +874,22 @@ static void GetSessionSize(TcpSession *ssn, Packet *p)
 }
 #endif
 
+static StreamingBufferBlock *GetBlock(StreamingBuffer *sb, const uint64_t offset)
+{
+    StreamingBufferBlock *blk = sb->head;
+    if (blk == NULL)
+        return NULL;
+
+    for ( ; blk != NULL; blk = SBB_RB_NEXT(blk)) {
+        if (blk->offset >= offset)
+            return blk;
+        else if ((blk->offset + blk->len) > offset) {
+            return blk;
+        }
+    }
+    return NULL;
+}
+
 /** \internal
  *
  *  Get buffer, or first part of the buffer if data gaps exist.
@@ -893,33 +909,35 @@ static void GetAppBuffer(TcpStream *stream, const uint8_t **data, uint32_t *data
         *data = mydata;
         *data_len = mydata_len;
     } else {
-        StreamingBufferBlock *blk = stream->sb.head;
+        StreamingBufferBlock *blk = GetBlock(&stream->sb, offset);
+        if (blk == NULL) {
+            *data = NULL;
+            *data_len = 0;
+            return;
+        }
 
-        if (blk->offset > offset) {
+        /* block at expected offset */
+        if (blk->offset == offset) {
+
+            StreamingBufferSBBGetData(&stream->sb, blk, data, data_len);
+
+        /* block past out offset */
+        } else if (blk->offset > offset) {
             SCLogDebug("gap, want data at offset %"PRIu64", "
                     "got data at %"PRIu64". GAP of size %"PRIu64,
                     offset, blk->offset, blk->offset - offset);
             *data = NULL;
             *data_len = blk->offset - offset;
 
-        } else if (offset >= (blk->offset + blk->len)) {
-
-            *data = NULL;
-            StreamingBufferBlock *nblk = SBB_RB_NEXT(blk);
-            *data_len = nblk ? nblk->offset - offset : 0;
-            if (nblk) {
-                SCLogDebug("gap, want data at offset %"PRIu64", "
-                        "got data at %"PRIu64". GAP of size %"PRIu64,
-                        offset, nblk->offset, nblk->offset - offset);
-            }
-
-        } else if (offset > blk->offset && offset < (blk->offset + blk->len)) {
+        /* block starts before offset, but ends after */
+        } else if (offset > blk->offset && offset <= (blk->offset + blk->len)) {
             SCLogDebug("get data from offset %"PRIu64". SBB %"PRIu64"/%u",
                     offset, blk->offset, blk->len);
             StreamingBufferSBBGetDataAtOffset(&stream->sb, blk, data, data_len, offset);
             SCLogDebug("data %p, data_len %u", *data, *data_len);
         } else {
-            StreamingBufferSBBGetData(&stream->sb, blk, data, data_len);
+            *data = NULL;
+            *data_len = 0;
         }
     }
 }
@@ -1005,6 +1023,7 @@ static int ReassembleUpdateAppLayer (ThreadVars *tv,
 
     while (1) {
         GetAppBuffer(*stream, &mydata, &mydata_len, app_progress);
+        DEBUG_VALIDATE_BUG_ON(mydata_len > (uint32_t)INT_MAX);
         if (mydata == NULL && mydata_len > 0 && CheckGap(ssn, *stream, p)) {
             SCLogDebug("sending GAP to app-layer (size: %u)", mydata_len);
 
@@ -1705,7 +1724,7 @@ static int StreamTcpReassembleHandleSegmentUpdateACK (ThreadVars *tv,
 
 int StreamTcpReassembleHandleSegment(ThreadVars *tv, TcpReassemblyThreadCtx *ra_ctx,
                                      TcpSession *ssn, TcpStream *stream,
-                                     Packet *p, PacketQueue *pq)
+                                     Packet *p, PacketQueueNoLock *pq)
 {
     SCEnter();
 
@@ -2038,8 +2057,8 @@ static int StreamTcpReassembleTest33(void)
     StreamTcpUTInit(&ra_ctx);
     StreamTcpUTSetupSession(&ssn);
 
-    PacketQueue pq;
-    memset(&pq,0,sizeof(PacketQueue));
+    PacketQueueNoLock pq;
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset(&f, 0, sizeof (Flow));
     memset(&tcph, 0, sizeof (TCPHdr));
     ThreadVars tv;
@@ -2100,8 +2119,8 @@ static int StreamTcpReassembleTest34(void)
 
     StreamTcpUTInit(&ra_ctx);
     StreamTcpUTSetupSession(&ssn);
-    PacketQueue pq;
-    memset(&pq,0,sizeof(PacketQueue));
+    PacketQueueNoLock pq;
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset(&f, 0, sizeof (Flow));
     memset(&tcph, 0, sizeof (TCPHdr));
     ThreadVars tv;
@@ -2158,7 +2177,7 @@ static int StreamTcpReassembleTest37(void)
     TCPHdr tcph;
     TcpReassemblyThreadCtx *ra_ctx = NULL;
     uint8_t packet[1460] = "";
-    PacketQueue pq;
+    PacketQueueNoLock pq;
     ThreadVars tv;
     memset(&tv, 0, sizeof (ThreadVars));
 
@@ -2167,7 +2186,7 @@ static int StreamTcpReassembleTest37(void)
 
     StreamTcpUTInit(&ra_ctx);
     StreamTcpUTSetupSession(&ssn);
-    memset(&pq,0,sizeof(PacketQueue));
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset(&f, 0, sizeof (Flow));
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&tv, 0, sizeof (ThreadVars));
@@ -2231,8 +2250,8 @@ static int StreamTcpReassembleTest39 (void)
     ThreadVars tv;
     StreamTcpThread stt;
     TCPHdr tcph;
-    PacketQueue pq;
-    memset(&pq,0,sizeof(PacketQueue));
+    PacketQueueNoLock pq;
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset (&f, 0, sizeof(Flow));
     memset(&tv, 0, sizeof (ThreadVars));
     memset(&stt, 0, sizeof (stt));
@@ -2714,8 +2733,8 @@ static int StreamTcpReassembleTest40 (void)
     Flow *f = NULL;
     TCPHdr tcph;
     TcpSession ssn;
-    PacketQueue pq;
-    memset(&pq,0,sizeof(PacketQueue));
+    PacketQueueNoLock pq;
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset(&tcph, 0, sizeof (TCPHdr));
     ThreadVars tv;
     memset(&tv, 0, sizeof (ThreadVars));
@@ -2963,8 +2982,8 @@ static int StreamTcpReassembleTest47 (void)
     TCPHdr tcph;
     TcpSession ssn;
     ThreadVars tv;
-    PacketQueue pq;
-    memset(&pq,0,sizeof(PacketQueue));
+    PacketQueueNoLock pq;
+    memset(&pq,0,sizeof(PacketQueueNoLock));
     memset(&tcph, 0, sizeof (TCPHdr));
     memset(&tv, 0, sizeof (ThreadVars));
     StreamTcpInitConfig(TRUE);

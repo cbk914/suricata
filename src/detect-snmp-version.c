@@ -29,9 +29,7 @@
 #include "detect-engine-content-inspection.h"
 #include "detect-snmp-version.h"
 #include "app-layer-parser.h"
-
-#include "rust-snmp-snmp-gen.h"
-#include "rust-snmp-detect-gen.h"
+#include "rust.h"
 
 /**
  *   [snmp.version]:[<|>|<=|>=]<version>;
@@ -43,9 +41,9 @@ static pcre_extra *parse_regex_study;
 enum DetectSNMPVersionMode {
     PROCEDURE_EQ = 1, /* equal */
     PROCEDURE_LT, /* less than */
-    PROCEDURE_LE, /* less than */
+    PROCEDURE_LE, /* less than or equal */
     PROCEDURE_GT, /* greater than */
-    PROCEDURE_GE, /* greater than */
+    PROCEDURE_GE, /* greater than or equal */
 };
 
 typedef struct DetectSNMPVersionData_ {
@@ -86,7 +84,6 @@ void DetectSNMPVersionRegister (void)
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_SNMP_VERSION].RegisterTests = DetectSNMPVersionRegisterTests;
 #endif
-    sigmatch_table[DETECT_AL_SNMP_VERSION].flags |= SIGMATCH_NOOPT;
 
     DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
 

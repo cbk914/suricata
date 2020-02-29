@@ -19,13 +19,13 @@
 
 //! RDP application layer
 
-use core::{
+use crate::core::{
     self, AppProto, DetectEngineState, Flow, ALPROTO_UNKNOWN, IPPROTO_TCP,
 };
-use conf;
+use crate::conf;
 use nom;
-use parser::*;
-use rdp::parser::*;
+use crate::parser::*;
+use crate::rdp::parser::*;
 use std;
 use std::mem::transmute;
 use tls_parser::{
@@ -505,8 +505,8 @@ pub unsafe extern "C" fn rs_rdp_register_parser() {
         name: PARSER_NAME.as_ptr() as *const std::os::raw::c_char,
         default_port: default_port.as_ptr(),
         ipproto: IPPROTO_TCP,
-        probe_ts: rs_rdp_probe_ts_tc,
-        probe_tc: rs_rdp_probe_ts_tc,
+        probe_ts: Some(rs_rdp_probe_ts_tc),
+        probe_tc: Some(rs_rdp_probe_ts_tc),
         min_depth: 0,
         max_depth: 16,
         state_new: rs_rdp_state_new,
@@ -561,7 +561,7 @@ pub unsafe extern "C" fn rs_rdp_register_parser() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rdp::parser::{RdpCookie, X224ConnectionRequest};
+    use crate::rdp::parser::{RdpCookie, X224ConnectionRequest};
 
     #[test]
     fn test_probe_rdp() {

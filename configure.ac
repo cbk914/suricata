@@ -1,4 +1,4 @@
-    AC_INIT([suricata],[5.0.2-dev])
+    AC_INIT([suricata],[6.0.0-dev])
     m4_ifndef([AM_SILENT_RULES], [m4_define([AM_SILENT_RULES],[])])AM_SILENT_RULES([yes])
     AC_CONFIG_HEADERS([config.h])
     AC_CONFIG_SRCDIR([src/suricata.c])
@@ -79,13 +79,14 @@
     AC_PROG_AWK
     AC_PROG_CC
     AC_PROG_CPP
+    AC_PROG_RANLIB
     AC_PROG_INSTALL
     AC_PROG_LN_S
     AC_PROG_MAKE_SET
     AC_PROG_GREP
 
     AC_PATH_PROG(HAVE_CYGPATH, cygpath, "no")
-    AM_CONDITIONAL([HAVE_CYGPATH], [test "x$enable_cygpath" = "xyes"])
+    AM_CONDITIONAL([HAVE_CYGPATH], [test "x$HAVE_CYGPATH" != "xno"])
 
     AC_PATH_PROG(HAVE_PKG_CONFIG, pkg-config, "no")
     if test "$HAVE_PKG_CONFIG" = "no"; then
@@ -184,15 +185,16 @@
     AC_CHECK_HEADERS([limits.h netdb.h netinet/in.h poll.h sched.h signal.h])
     AC_CHECK_HEADERS([stdarg.h stdint.h stdio.h stdlib.h stdbool.h string.h strings.h sys/ioctl.h])
     AC_CHECK_HEADERS([syslog.h sys/prctl.h sys/socket.h sys/stat.h sys/syscall.h])
-    AC_CHECK_HEADERS([sys/time.h time.h unistd.h])
+    AC_CHECK_HEADERS([sys/time.h time.h unistd.h sys/param.h])
     AC_CHECK_HEADERS([sys/ioctl.h linux/if_ether.h linux/if_packet.h linux/filter.h])
     AC_CHECK_HEADERS([linux/ethtool.h linux/sockios.h])
-    AC_CHECK_HEADERS([glob.h])
+    AC_CHECK_HEADERS([glob.h locale.h])
     AC_CHECK_HEADERS([dirent.h fnmatch.h])
     AC_CHECK_HEADERS([sys/resource.h sys/types.h sys/un.h])
     AC_CHECK_HEADERS([sys/random.h])
     AC_CHECK_HEADERS([utime.h])
     AC_CHECK_HEADERS([libgen.h])
+    AC_CHECK_HEADERS([mach/mach.h])
 
     AC_CHECK_HEADERS([sys/socket.h net/if.h sys/mman.h linux/if_arp.h], [], [],
     [[#ifdef HAVE_SYS_SOCKET_H
@@ -217,28 +219,43 @@
 
     # Checks for typedefs, structures, and compiler characteristics.
     AC_C_INLINE
+    AC_C_RESTRICT
     AC_TYPE_PID_T
+    AC_TYPE_MODE_T
     AC_TYPE_SIZE_T
+    AC_TYPE_SSIZE_T
+    AC_TYPE_INT8_T
+    AC_TYPE_INT16_T
     AC_TYPE_INT32_T
+    AC_TYPE_INT64_T
+    AC_TYPE_UINT8_T
     AC_TYPE_UINT16_T
     AC_TYPE_UINT32_T
     AC_TYPE_UINT64_T
-    AC_TYPE_UINT8_T
+    AC_STRUCT_TIMEZONE
+    AC_CHECK_TYPES([ptrdiff_t])
     AC_HEADER_STDBOOL
 
     # Checks for library functions.
     AC_FUNC_MALLOC
     AC_FUNC_REALLOC
-    AC_CHECK_FUNCS([gettimeofday memset strcasecmp strchr strrchr strdup strndup strerror strncasecmp strtol strtoul memchr memrchr clock_gettime])
-    AC_CHECK_FUNCS([strptime])
+    AC_FUNC_FORK
+    AC_FUNC_MKTIME
+    AC_FUNC_MMAP
+    AC_FUNC_STRTOD
+
+    AC_CHECK_FUNCS([memmem memset memchr memrchr memmove])
+    AC_CHECK_FUNCS([strcasecmp strchr strrchr strdup strndup strncasecmp strtol strtoul strstr strpbrk strtoull strtoumax])
+    AC_CHECK_FUNCS([strerror])
+    AC_CHECK_FUNCS([gethostname inet_ntoa uname])
+    AC_CHECK_FUNCS([gettimeofday clock_gettime utime strptime tzset localtime_r])
+    AC_CHECK_FUNCS([socket setenv select putenv dup2 endgrent endpwent atexit munmap])
 
     AC_CHECK_DECL([getrandom],
         AC_DEFINE([HAVE_GETRANDOM], [1], [Use getrandom]),
         [], [
             #include <sys/random.h> 
             ])
-
-    AC_CHECK_FUNCS([utime])
 
     OCFLAGS=$CFLAGS
     CFLAGS=""
@@ -472,13 +489,6 @@
                   ],
                   [AC_MSG_ERROR([clang needed to build ebpf files])])
           ])
-
-  # enable workaround for old barnyard2 for unified alert output
-    AC_ARG_ENABLE(old-barnyard2,
-           AS_HELP_STRING([--enable-old-barnyard2], [Use workaround for old barnyard2 in unified2 output]),[enable_old_barnyard2=$enableval],[enable_old_barnyard2=no])
-    AS_IF([test "x$enable_old_barnyard2" = "xyes"], [
-        AC_DEFINE([HAVE_OLD_BARNYARD2],[1],[Use workaround for old barnyard2 in unified2 output])
-    ])
 
   # enable debug output
     AC_ARG_ENABLE(debug,
@@ -1915,11 +1925,15 @@
         fi
     fi
 
-  # Napatech - Using the 3GD API
+    # Napatech - Using the 3GD API
     AC_ARG_ENABLE(napatech,
                 AS_HELP_STRING([--enable-napatech],[Enabled Napatech Devices]),
                 [ enable_napatech=$enableval ],
                 [ enable_napatech=no])
+    AC_ARG_ENABLE(napatech_bypass,
+                AS_HELP_STRING([--disable-napatech-bypass],[Disable Bypass feature on Napatech cards]),
+                [ napatech_bypass=$enableval ],
+                [ napatech_bypass=yes])
     AC_ARG_WITH(napatech_includes,
                 [  --with-napatech-includes=DIR   napatech include directory],
                 [with_napatech_includes="$withval"],[with_napatech_includes="/opt/napatech3/include"])
@@ -1957,6 +1971,17 @@
         fi
 
         AC_DEFINE([HAVE_NAPATECH],[1],(Napatech capture card support))
+        if test "$napatech_bypass" = "yes"; then
+            AC_CHECK_LIB(ntapi, NT_FlowOpenAttrInit,NTFLOW="yes",NTFLOW="no")
+            if test "$NTFLOW" = "yes"; then
+                echo "   Napatech Flow Processing is Enabled (--disable-napatech-bypass if not needed)"
+                AC_DEFINE([NAPATECH_ENABLE_BYPASS],[1],(Napatech flowdirector support))
+            else
+                echo "Napatech Flow Processing is not available"
+            fi
+        else
+            echo "Napatech Flow Processing is Disabled."
+        fi
     fi
 
   # liblua
@@ -2387,17 +2412,6 @@ fi
     rust_vendor_comment="# "
     have_rust_vendor="no"
 
-    # We may require Python if the Rust header stubs are not already
-    # generated.
-    if test "x$enable_python" != "xyes" && test ! -f rust/gen/c-headers/rust-core-gen.h; then
-        echo ""
-        echo "   ERROR! Rust support requires Python."
-        echo
-        echo "   Ubuntu: apt install python"
-        echo
-        exit 1
-    fi
-
     if test "x$cross_compiling" = "xyes"; then
       RUST_SURICATA_LIB_XC_DIR="${host_alias}/"
     else
@@ -2411,11 +2425,16 @@ fi
     fi
 
     RUST_LDADD="${RUST_SURICATA_LIB} ${RUST_LDADD}"
-    CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen/c-headers"
+    CFLAGS="${CFLAGS} -I\${srcdir}/../rust/gen"
     AC_SUBST(RUST_SURICATA_LIB)
     AC_SUBST(RUST_LDADD)
     if test "x$CARGO_HOME" = "x"; then
-      AC_SUBST([CARGO_HOME], [~/.cargo])
+        if test "x$HAVE_CYGPATH" != "xno"; then
+          CYGPATH_CARGO_HOME=$(cygpath -a -t mixed ~/.cargo)
+          AC_SUBST([CARGO_HOME], [$CYGPATH_CARGO_HOME])
+        else
+          AC_SUBST([CARGO_HOME], [~/.cargo])
+        fi
     else
       AC_SUBST([CARGO_HOME], [$CARGO_HOME])
     fi
@@ -2465,6 +2484,37 @@ fi
         have_cargo_vendor=$have_cargo_vendor_bin
     fi
 
+    AC_CHECK_FILES([$srcdir/rust/gen], [have_rust_headers="yes"])
+    AC_PATH_PROG(CBINDGEN, cbindgen, "no")
+    if test "x$CBINDGEN" != "xno"; then
+      cbindgen_version=$(cbindgen --version | cut -d' ' -f2-)
+      min_cbindgen_version="0.10.0"
+      AS_VERSION_COMPARE([$cbindgen_version], [$min_cbindgen_version],
+          [cbindgen_ok="no"],
+          [cbindgen_ok="yes"],
+          [cbindgen_ok="yes"])
+      if test "x$cbindgen_ok" != "xyes"; then
+        echo "  Warning: cbindgen must be at least version $min_cbindgen_version,"
+        echo "      found $cbindgen_version."
+        echo "  To update: cargo install --force cbindgen"
+        CBINDGEN="no"
+      else
+        have_rust_headers="no"
+      fi
+    fi
+
+    # Require cbindgen if generated headers are not bundled.
+    if test "x$have_rust_headers" != "xyes"; then
+      if test "x$CBINDGEN" = "xno"; then
+        echo "  Warning: cbindgen too old or not found, it is required to "
+        echo "      generate header files."
+        echo "  To install: cargo install --force cbindgen"
+        AC_MSG_ERROR([cbindgen required])
+      fi
+    fi
+
+    AM_CONDITIONAL([HAVE_RUST_HEADERS], [test "x$have_rust_headers" = "xyes"])
+    AM_CONDITIONAL([HAVE_CBINDGEN], [test "x$CBINDGEN" != "xno"])
     AM_CONDITIONAL([HAVE_CARGO_VENDOR], [test "x$have_cargo_vendor" != "xno"])
 
     AC_ARG_ENABLE(rust_strict,
@@ -2493,7 +2543,7 @@ fi
 if test "${enable_ebpf}" = "yes" || test "${enable_unittests}" = "yes"; then
   AC_DEFINE([CAPTURE_OFFLOAD_MANAGER], [1],[Building flow bypass manager code])
 fi
-if test "${enable_ebpf}" = "yes" || test "${enable_nfqueue}" = "yes" || test "${enable_pfring}" = "yes" || test "${enable_unittests}" = "yes"; then
+if test "${enable_ebpf}" = "yes" || test "${enable_nfqueue}" = "yes" || test "${enable_pfring}" = "yes" || test "${enable_napatech}" = "yes"  || test "${enable_unittests}" = "yes"; then
   AC_DEFINE([CAPTURE_OFFLOAD], [1],[Building flow capture bypass code])
 fi
 
@@ -2540,7 +2590,7 @@ if test "$WINDOWS_PATH" = "yes"; then
     e_logfilesdir="$e_logdir\\\\files"
     e_logcertsdir="$e_logdir\\\\certs"
     e_datarulesdir="$e_winbase\\\\rules\\\\"
-    if test "$HAVE_CYGPATH" != "no"; then
+    if test "x$HAVE_CYGPATH" != "xno"; then
         # turn srcdir into abs path and convert to the
         # mixed output (/c/Users/dev into  c:/Users/dev)
         e_rustdir="$(cygpath -a -t mixed ${srcdir})/rust"

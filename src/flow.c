@@ -83,6 +83,20 @@ SC_ATOMIC_DECLARE(unsigned int, flow_prune_idx);
 /** atomic flags */
 SC_ATOMIC_DECLARE(unsigned int, flow_flags);
 
+/** FlowProto specific timeouts and free/state functions */
+
+FlowProtoTimeout flow_timeouts_normal[FLOW_PROTO_MAX];
+FlowProtoTimeout flow_timeouts_emerg[FLOW_PROTO_MAX];
+FlowProtoFreeFunc flow_freefuncs[FLOW_PROTO_MAX];
+
+/** spare/unused/prealloced flows live here */
+FlowQueue flow_spare_q;
+
+FlowConfig flow_config;
+
+/** flow memuse counter (atomic), for enforcing memcap limit */
+SC_ATOMIC_DECLARE(uint64_t, flow_memuse);
+
 void FlowRegisterTests(void);
 void FlowInitFlowProto(void);
 int FlowSetProtoFreeFunc(uint8_t, void (*Free)(void *));
@@ -1111,6 +1125,19 @@ void FlowUpdateState(Flow *f, enum FlowState s)
          * has to revisit this row */
         SC_ATOMIC_SET(f->fb->next_ts, 0);
     }
+}
+
+/**
+ * \brief Get flow last time as individual values.
+ *
+ * Instead of returning a pointer to the timeval copy the timeval
+ * parts into output pointers to make it simpler to call from Rust
+ * over FFI using only basic data types.
+ */
+void FlowGetLastTimeAsParts(Flow *flow, uint64_t *secs, uint64_t *usecs)
+{
+    *secs = (uint64_t)flow->lastts.tv_sec;
+    *usecs = (uint64_t)flow->lastts.tv_usec;
 }
 
 /************************************Unittests*******************************/

@@ -29,9 +29,7 @@
 #include "detect-engine-content-inspection.h"
 #include "detect-snmp-pdu_type.h"
 #include "app-layer-parser.h"
-
-#include "rust-snmp-snmp-gen.h"
-#include "rust-snmp-detect-gen.h"
+#include "rust.h"
 
 /**
  *   [snmp.pdu_type]:<type>;
@@ -74,7 +72,6 @@ void DetectSNMPPduTypeRegister(void)
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_SNMP_PDU_TYPE].RegisterTests = DetectSNMPPduTypeRegisterTests;
 #endif
-    sigmatch_table[DETECT_AL_SNMP_PDU_TYPE].flags |= SIGMATCH_NOOPT;
 
     DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
 

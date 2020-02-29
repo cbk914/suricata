@@ -12,7 +12,6 @@ alert-debuglog.c alert-debuglog.h \
 alert-fastlog.c alert-fastlog.h \
 alert-prelude.c alert-prelude.h \
 alert-syslog.c alert-syslog.h \
-alert-unified2-alert.c alert-unified2-alert.h \
 app-layer.c app-layer.h \
 app-layer-dcerpc.c app-layer-dcerpc.h \
 app-layer-dcerpc-udp.c app-layer-dcerpc-udp.h \
@@ -291,6 +290,7 @@ detect-modbus.c detect-modbus.h \
 detect-xbits.c detect-xbits.h \
 detect-cipservice.c detect-cipservice.h \
 device-storage.c device-storage.h \
+feature.c feature.h \
 flow-bit.c flow-bit.h \
 flow.c flow.h \
 flow-bypass.c flow-bypass.h \
@@ -321,6 +321,7 @@ log-stats.c log-stats.h \
 log-tcp-data.c log-tcp-data.h \
 log-tlslog.c log-tlslog.h \
 log-tlsstore.c log-tlsstore.h \
+main.c \
 output.c output.h \
 output-file.c output-file.h \
 output-filedata.c output-filedata.h \
@@ -382,6 +383,7 @@ runmode-unix-socket.c runmode-unix-socket.h \
 runmode-windivert.c runmode-windivert.h \
 runmodes.c runmodes.h \
 rust.h \
+rust-context.h \
 source-af-packet.c source-af-packet.h \
 source-erf-dag.c source-erf-dag.h \
 source-erf-file.c source-erf-file.h \

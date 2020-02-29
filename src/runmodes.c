@@ -43,7 +43,6 @@
 
 #include "alert-fastlog.h"
 #include "alert-prelude.h"
-#include "alert-unified2-alert.h"
 #include "alert-debuglog.h"
 
 #include "log-httplog.h"
@@ -56,6 +55,7 @@
 #include "counters.h"
 
 int debuglog_enabled = 0;
+int threading_set_cpu_affinity = FALSE;
 
 /* Runmode Global Thread Names */
 const char *thread_name_autofp = "RX";
@@ -531,6 +531,8 @@ void RunModeShutDown(void)
     OutputStatsShutdown();
     OutputFlowShutdown();
 
+    OutputClearActiveLoggers();
+
     /* Reset logger counts. */
     file_logger_count = 0;
     filedata_logger_count = 0;
@@ -758,6 +760,10 @@ void RunModeInitializeOutputs(void)
                     "(see https://redmine.openinfosecfoundation.org/issues/353"
                     " for an explanation)");
             continue;
+        } else if (strncmp(output->val, "unified2-", sizeof("unified2-") - 1) == 0) {
+            SCLogWarning(SC_ERR_NOT_SUPPORTED,
+                    "Unified2 is no longer supported.");
+            continue;
         } else if (strcmp(output->val, "alert-prelude") == 0) {
 #ifndef PRELUDE
             SCLogWarning(SC_ERR_NOT_SUPPORTED,
@@ -890,6 +896,7 @@ void RunModeInitializeOutputs(void)
             AppLayerParserRegisterLoggerBits(IPPROTO_UDP, a, logger_bits[a]);
 
     }
+    OutputSetupActiveLoggers();
 }
 
 float threading_detect_ratio = 1;
