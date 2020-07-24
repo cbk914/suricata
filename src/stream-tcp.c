@@ -569,10 +569,9 @@ void StreamTcpInitConfig(char quiet)
                         temp_rdrange);
                 exit(EXIT_FAILURE);
             } else if (rdrange >= 100) {
-                SCLogError(SC_ERR_INVALID_VALUE,
-                           "stream.reassembly.randomize-chunk-range "
-                           "must be lower than 100");
-                exit(EXIT_FAILURE);
+                           FatalError(SC_ERR_FATAL,
+                                      "stream.reassembly.randomize-chunk-range "
+                                      "must be lower than 100");
             }
         }
     }
@@ -668,9 +667,6 @@ void StreamTcpInitConfig(char quiet)
 
 void StreamTcpFreeConfig(char quiet)
 {
-    SC_ATOMIC_DESTROY(stream_config.memcap);
-    SC_ATOMIC_DESTROY(stream_config.reassembly_memcap);
-
     StreamTcpReassembleFree(quiet);
 
     SCMutexLock(&ssn_pool_mutex);
@@ -5849,6 +5845,21 @@ invalid:
     SCReturnInt(-1);
 }
 
+/** \brief update reassembly progress
+
+ * \param ssn TCP Session
+ * \param direction direction to set the flag in: 0 toserver, 1 toclient
+ */
+void StreamTcpUpdateAppLayerProgress(TcpSession *ssn, char direction,
+        const uint32_t progress)
+{
+    if (direction) {
+        ssn->server.app_progress_rel += progress;
+    } else {
+        ssn->client.app_progress_rel += progress;
+    }
+}
+
 /** \brief disable reassembly
 
  *  Disable app layer and set raw inspect to no longer accept new data.
@@ -5857,7 +5868,7 @@ invalid:
  * \param ssn TCP Session to set the flag in
  * \param direction direction to set the flag in: 0 toserver, 1 toclient
  */
-void StreamTcpSetSessionNoReassemblyFlag (TcpSession *ssn, char direction)
+void StreamTcpSetSessionNoReassemblyFlag(TcpSession *ssn, char direction)
 {
     ssn->flags |= STREAMTCP_FLAG_APP_LAYER_DISABLED;
     if (direction) {
@@ -5873,7 +5884,7 @@ void StreamTcpSetSessionNoReassemblyFlag (TcpSession *ssn, char direction)
  * \param ssn TCP Session to set the flag in
  * \param direction direction to set the flag in: 0 toserver, 1 toclient
  */
-void StreamTcpSetDisableRawReassemblyFlag (TcpSession *ssn, char direction)
+void StreamTcpSetDisableRawReassemblyFlag(TcpSession *ssn, char direction)
 {
     direction ? (ssn->server.flags |= STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED) :
                 (ssn->client.flags |= STREAMTCP_STREAM_FLAG_NEW_RAW_DISABLED);
@@ -5884,7 +5895,7 @@ void StreamTcpSetDisableRawReassemblyFlag (TcpSession *ssn, char direction)
  * \param ssn TCP Session to set the flag in
  * \param direction direction to set the flag in: 0 toserver, 1 toclient
  */
-void StreamTcpSetSessionBypassFlag (TcpSession *ssn)
+void StreamTcpSetSessionBypassFlag(TcpSession *ssn)
 {
     ssn->flags |= STREAMTCP_FLAG_BYPASS;
 }
@@ -6257,6 +6268,57 @@ void TcpSessionSetReassemblyDepth(TcpSession *ssn, uint32_t size)
     }
 
     return;
+}
+
+const char *StreamTcpStateAsString(const enum TcpState state)
+{
+    const char *tcp_state = NULL;
+    switch (state) {
+        case TCP_NONE:
+            tcp_state = "none";
+            break;
+        case TCP_LISTEN:
+            tcp_state = "listen";
+            break;
+        case TCP_SYN_SENT:
+            tcp_state = "syn_sent";
+            break;
+        case TCP_SYN_RECV:
+            tcp_state = "syn_recv";
+            break;
+        case TCP_ESTABLISHED:
+            tcp_state = "established";
+            break;
+        case TCP_FIN_WAIT1:
+            tcp_state = "fin_wait1";
+            break;
+        case TCP_FIN_WAIT2:
+            tcp_state = "fin_wait2";
+            break;
+        case TCP_TIME_WAIT:
+            tcp_state = "time_wait";
+            break;
+        case TCP_LAST_ACK:
+            tcp_state = "last_ack";
+            break;
+        case TCP_CLOSE_WAIT:
+            tcp_state = "close_wait";
+            break;
+        case TCP_CLOSING:
+            tcp_state = "closing";
+            break;
+        case TCP_CLOSED:
+            tcp_state = "closed";
+            break;
+    }
+    return tcp_state;
+}
+
+const char *StreamTcpSsnStateAsString(const TcpSession *ssn)
+{
+    if (ssn == NULL)
+        return NULL;
+    return StreamTcpStateAsString(ssn->state);
 }
 
 #ifdef UNITTESTS

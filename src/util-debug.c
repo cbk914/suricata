@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -615,6 +615,44 @@ SCError SCLogMessage(const SCLogLevel log_level, const char *file,
     return SC_OK;
 }
 
+void SCLog(int x, const char *file, const char *func, const int line,
+        const char *fmt, ...)
+{
+    if (sc_log_global_log_level >= x &&
+            (sc_log_fg_filters_present == 0 ||
+             SCLogMatchFGFilterWL(file, func, line) == 1 ||
+             SCLogMatchFGFilterBL(file, func, line) == 1) &&
+            (sc_log_fd_filters_present == 0 ||
+             SCLogMatchFDFilter(func) == 1))
+    {
+        char msg[SC_LOG_MAX_LOG_MSG_LEN];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(msg, sizeof(msg), fmt, ap);
+        va_end(ap);
+        SCLogMessage(x, file, line, func, SC_OK, msg);
+    }
+}
+
+void SCLogErr(int x, const char *file, const char *func, const int line,
+        const int err, const char *fmt, ...)
+{
+    if (sc_log_global_log_level >= x &&
+            (sc_log_fg_filters_present == 0 ||
+             SCLogMatchFGFilterWL(file, func, line) == 1 ||
+             SCLogMatchFGFilterBL(file, func, line) == 1) &&
+            (sc_log_fd_filters_present == 0 ||
+             SCLogMatchFDFilter(func) == 1))
+    {
+        char msg[SC_LOG_MAX_LOG_MSG_LEN];
+        va_list ap;
+        va_start(ap, fmt);
+        vsnprintf(msg, sizeof(msg), fmt, ap);
+        va_end(ap);
+        SCLogMessage(x, file, line, func, err, msg);
+    }
+}
+
 /**
  * \brief Returns whether debug messages are enabled to be logged or not
  *
@@ -648,8 +686,8 @@ SCLogOPBuffer *SCLogAllocLogOPBuffer(void)
 
     if ( (buffer = SCMalloc(sc_log_config->op_ifaces_cnt *
                           sizeof(SCLogOPBuffer))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogAllocLogOPBuffer. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogAllocLogOPBuffer. Exiting...");
     }
 
     op_iface_ctx = sc_log_config->op_ifaces;
@@ -676,8 +714,8 @@ static inline SCLogOPIfaceCtx *SCLogAllocLogOPIfaceCtx(void)
     SCLogOPIfaceCtx *iface_ctx = NULL;
 
     if ( (iface_ctx = SCMalloc(sizeof(SCLogOPIfaceCtx))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogallocLogOPIfaceCtx. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogallocLogOPIfaceCtx. Exiting...");
     }
     memset(iface_ctx, 0, sizeof(SCLogOPIfaceCtx));
 
@@ -703,8 +741,8 @@ static inline SCLogOPIfaceCtx *SCLogInitFileOPIface(const char *file,
     SCLogOPIfaceCtx *iface_ctx = SCLogAllocLogOPIfaceCtx();
 
     if (iface_ctx == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogInitFileOPIface. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogInitFileOPIface. Exiting...");
     }
 
     if (file == NULL) {
@@ -768,8 +806,8 @@ static inline SCLogOPIfaceCtx *SCLogInitConsoleOPIface(const char *log_format,
     SCLogOPIfaceCtx *iface_ctx = SCLogAllocLogOPIfaceCtx();
 
     if (iface_ctx == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogInitConsoleOPIface. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogInitConsoleOPIface. Exiting...");
     }
 
     iface_ctx->iface = SC_LOG_OP_IFACE_CONSOLE;
@@ -834,8 +872,8 @@ static inline SCLogOPIfaceCtx *SCLogInitSyslogOPIface(int facility,
     SCLogOPIfaceCtx *iface_ctx = SCLogAllocLogOPIfaceCtx();
 
     if ( iface_ctx == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogInitSyslogOPIface. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogInitSyslogOPIface. Exiting...");
     }
 
     iface_ctx->iface = SC_LOG_OP_IFACE_SYSLOG;
@@ -933,6 +971,15 @@ static inline void SCLogSetLogLevel(SCLogInitData *sc_lid, SCLogConfig *sc_lc)
     return;
 }
 
+static inline const char *SCLogGetDefaultLogFormat(void)
+{
+    const char *prog_ver = GetProgramVersion();
+    if (strstr(prog_ver, "RELEASE") != NULL) {
+        return SC_LOG_DEF_LOG_FORMAT_REL;
+    }
+    return SC_LOG_DEF_LOG_FORMAT_DEV;
+}
+
 /**
  * \brief Internal function used to set the logging module global_log_format
  *        during the initialization phase
@@ -954,7 +1001,7 @@ static inline void SCLogSetLogFormat(SCLogInitData *sc_lid, SCLogConfig *sc_lc)
 
     /* deal with the global log format to be used */
     if (format == NULL || strlen(format) > SC_LOG_MAX_LOG_FORMAT_LEN) {
-        format = SC_LOG_DEF_LOG_FORMAT;
+        format = SCLogGetDefaultLogFormat();
 #ifndef UNITTESTS
         if (sc_lid != NULL) {
             printf("Warning: Invalid/No global_log_format supplied by user or format "
@@ -1257,15 +1304,14 @@ void SCLogInitLogModule(SCLogInitData *sc_lid)
 
 #if defined (OS_WIN32)
     if (SCMutexInit(&sc_log_stream_lock, NULL) != 0) {
-        SCLogError(SC_ERR_MUTEX, "Failed to initialize log mutex.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Failed to initialize log mutex.");
     }
 #endif /* OS_WIN32 */
 
     /* sc_log_config is a global variable */
     if ( (sc_log_config = SCMalloc(sizeof(SCLogConfig))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in SCLogInitLogModule. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in SCLogInitLogModule. Exiting...");
     }
     memset(sc_log_config, 0, sizeof(SCLogConfig));
 
@@ -1326,7 +1372,7 @@ void SCLogLoadConfig(int daemon, int verbose)
     }
 
     if (ConfGet("logging.default-log-format", &sc_lid->global_log_format) != 1)
-        sc_lid->global_log_format = SC_LOG_DEF_LOG_FORMAT;
+        sc_lid->global_log_format = SCLogGetDefaultLogFormat();
 
     (void)ConfGet("logging.default-output-filter", &sc_lid->op_filter);
 
@@ -1382,9 +1428,8 @@ void SCLogLoadConfig(int daemon, int verbose)
         else if (strcmp(output->name, "file") == 0) {
             const char *filename = ConfNodeLookupChildValue(output, "filename");
             if (filename == NULL) {
-                SCLogError(SC_ERR_MISSING_CONFIG_PARAM,
-                    "Logging to file requires a filename");
-                exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Logging to file requires a filename");
             }
             char *path = NULL;
             if (!(PathIsAbsolute(filename))) {
@@ -1514,7 +1559,7 @@ static int SCLogTestInit01(void)
     FAIL_IF_NOT(sc_log_config->op_ifaces != NULL &&
                SC_LOG_DEF_LOG_OP_IFACE == sc_log_config->op_ifaces->iface);
     FAIL_IF_NOT(sc_log_config->log_format != NULL &&
-               strcmp(SC_LOG_DEF_LOG_FORMAT, sc_log_config->log_format) == 0);
+               strcmp(SCLogGetDefaultLogFormat(), sc_log_config->log_format) == 0);
 
     SCLogDeInitLogModule();
 
@@ -1568,7 +1613,7 @@ static int SCLogTestInit02(void)
                sc_log_config->op_ifaces->next != NULL &&
                SC_LOG_OP_IFACE_CONSOLE == sc_log_config->op_ifaces->next->iface);
     FAIL_IF_NOT(sc_log_config->log_format != NULL &&
-               strcmp(SC_LOG_DEF_LOG_FORMAT, sc_log_config->log_format) == 0);
+               strcmp(SCLogGetDefaultLogFormat(), sc_log_config->log_format) == 0);
     FAIL_IF_NOT(sc_log_config->op_ifaces != NULL &&
                sc_log_config->op_ifaces->log_format != NULL &&
                strcmp("%m - %d", sc_log_config->op_ifaces->log_format) == 0);

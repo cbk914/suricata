@@ -1043,9 +1043,8 @@ int UnixManagerInit(void)
             SCLogDebug("ConfGetBool could not load the value.");
         }
         if (failure_fatal) {
-            SCLogError(SC_ERR_INITIALIZATION,
-                    "Unable to create unix command socket");
-            exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Unable to create unix command socket");
         } else {
             SCLogWarning(SC_ERR_INITIALIZATION,
                     "Unable to create unix command socket");
@@ -1083,6 +1082,7 @@ int UnixManagerInit(void)
     UnixManagerRegisterCommand("memcap-list", UnixSocketShowAllMemcap, NULL, 0);
 
     UnixManagerRegisterCommand("dataset-add", UnixSocketDatasetAdd, &command, UNIX_CMD_TAKE_ARGS);
+    UnixManagerRegisterCommand("dataset-remove", UnixSocketDatasetRemove, &command, UNIX_CMD_TAKE_ARGS);
 
     return 0;
 }
@@ -1159,17 +1159,14 @@ void UnixManagerThreadSpawn(int mode)
                                           "UnixManager", 0);
 
     if (tv_unixmgr == NULL) {
-        SCLogError(SC_ERR_INITIALIZATION, "TmThreadsCreate failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "TmThreadsCreate failed");
     }
     if (TmThreadSpawn(tv_unixmgr) != TM_ECODE_OK) {
-        SCLogError(SC_ERR_INITIALIZATION, "TmThreadSpawn failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "TmThreadSpawn failed");
     }
     if (mode == 1) {
         if (TmThreadsCheckFlag(tv_unixmgr, THV_RUNNING_DONE)) {
-            SCLogError(SC_ERR_INITIALIZATION, "Unix socket init failed");
-            exit(EXIT_FAILURE);
+            FatalError(SC_ERR_FATAL, "Unix socket init failed");
         }
     }
     return;

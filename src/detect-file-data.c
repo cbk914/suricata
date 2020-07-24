@@ -83,7 +83,7 @@ void DetectFiledataRegister(void)
     sigmatch_table[DETECT_FILE_DATA].name = "file.data";
     sigmatch_table[DETECT_FILE_DATA].alias = "file_data";
     sigmatch_table[DETECT_FILE_DATA].desc = "make content keywords match on file data";
-    sigmatch_table[DETECT_FILE_DATA].url = DOC_URL DOC_VERSION "/rules/http-keywords.html#file-data";
+    sigmatch_table[DETECT_FILE_DATA].url = "/rules/http-keywords.html#file-data";
     sigmatch_table[DETECT_FILE_DATA].Setup = DetectFiledataSetup;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_FILE_DATA].RegisterTests = DetectFiledataRegisterTests;
@@ -189,6 +189,7 @@ static int DetectFiledataSetup (DetectEngineCtx *de_ctx, Signature *s, const cha
     if (DetectBufferSetActiveList(s, DetectBufferTypeGetByName("file_data")) < 0)
         return -1;
 
+    s->init_data->init_flags |= SIG_FLAG_INIT_FILEDATA;
     SetupDetectEngineConfig(de_ctx);
     return 0;
 }

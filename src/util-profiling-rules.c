@@ -158,7 +158,7 @@ void SCProfilingRulesGlobalInit(void)
 
             val = ConfNodeLookupChildValue(conf, "limit");
             if (val != NULL) {
-                if (ByteExtractStringUint32(&profiling_rules_limit, 10,
+                if (StringParseUint32(&profiling_rules_limit, 10,
                             (uint16_t)strlen(val), val) <= 0) {
                     SCLogError(SC_ERR_INVALID_ARGUMENT, "Invalid limit: %s", val);
                     exit(EXIT_FAILURE);
@@ -577,9 +577,8 @@ static SCProfileDetectCtx *SCProfilingRuleInitCtx(void)
         memset(ctx, 0x00, sizeof(SCProfileDetectCtx));
 
         if (pthread_mutex_init(&ctx->data_m, NULL) != 0) {
-            SCLogError(SC_ERR_MUTEX,
-                    "Failed to initialize hash table mutex.");
-            exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Failed to initialize hash table mutex.");
         }
     }
 

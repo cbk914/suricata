@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2019 Open Information Security Foundation
+/* Copyright (C) 2015-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -35,8 +35,7 @@
  *   [snmp.version]:[<|>|<=|>=]<version>;
  */
 #define PARSE_REGEX "^\\s*(<=|>=|<|>)?\\s*([0-9]+)\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 enum DetectSNMPVersionMode {
     PROCEDURE_EQ = 1, /* equal */
@@ -53,7 +52,7 @@ typedef struct DetectSNMPVersionData_ {
 
 static DetectSNMPVersionData *DetectSNMPVersionParse (const char *);
 static int DetectSNMPVersionSetup (DetectEngineCtx *, Signature *s, const char *str);
-static void DetectSNMPVersionFree(void *);
+static void DetectSNMPVersionFree(DetectEngineCtx *, void *);
 #ifdef UNITTESTS
 static void DetectSNMPVersionRegisterTests(void);
 #endif
@@ -76,7 +75,7 @@ void DetectSNMPVersionRegister (void)
 {
     sigmatch_table[DETECT_AL_SNMP_VERSION].name = "snmp.version";
     sigmatch_table[DETECT_AL_SNMP_VERSION].desc = "match SNMP version";
-    sigmatch_table[DETECT_AL_SNMP_VERSION].url = DOC_URL DOC_VERSION "/rules/snmp-keywords.html#snmp-version";
+    sigmatch_table[DETECT_AL_SNMP_VERSION].url = "/rules/snmp-keywords.html#snmp-version";
     sigmatch_table[DETECT_AL_SNMP_VERSION].Match = NULL;
     sigmatch_table[DETECT_AL_SNMP_VERSION].AppLayerTxMatch = DetectSNMPVersionMatch;
     sigmatch_table[DETECT_AL_SNMP_VERSION].Setup = DetectSNMPVersionSetup;
@@ -85,7 +84,7 @@ void DetectSNMPVersionRegister (void)
     sigmatch_table[DETECT_AL_SNMP_VERSION].RegisterTests = DetectSNMPVersionRegisterTests;
 #endif
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     DetectAppLayerInspectEngineRegister("snmp.version",
             ALPROTO_SNMP, SIG_FLAG_TOSERVER, 0,
@@ -182,15 +181,13 @@ static int DetectSNMPVersionMatch (DetectEngineThreadCtx *det_ctx,
 static DetectSNMPVersionData *DetectSNMPVersionParse (const char *rawstr)
 {
     DetectSNMPVersionData *dd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char mode[2] = "";
     char value1[20] = "";
     char *endptr = NULL;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0,
-                    0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", rawstr);
         goto error;
@@ -288,7 +285,7 @@ static int DetectSNMPVersionSetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectSNMPVersionFree(dd);
+    DetectSNMPVersionFree(de_ctx, dd);
     return -1;
 }
 
@@ -298,7 +295,7 @@ error:
  *
  * \param de_ptr Pointer to DetectSNMPVersionData.
  */
-static void DetectSNMPVersionFree(void *ptr)
+static void DetectSNMPVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     SCFree(ptr);
 }

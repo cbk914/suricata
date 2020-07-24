@@ -43,7 +43,7 @@ void SigCleanSignatures(DetectEngineCtx *de_ctx)
 
     for (Signature *s = de_ctx->sig_list; s != NULL;) {
         Signature *ns = s->next;
-        SigFree(s);
+        SigFree(de_ctx, s);
         s = ns;
     }
     de_ctx->sig_list = NULL;
@@ -1418,7 +1418,9 @@ int SigAddressPrepareStage1(DetectEngineCtx *de_ctx)
         SCLogConfig("building signature grouping structure, stage 1: "
                "preprocessing rules... complete");
     }
-    DetectFlowbitsAnalyze(de_ctx);
+
+    if (DetectFlowbitsAnalyze(de_ctx) != 0)
+        goto error;
 
     return 0;
 
@@ -1850,7 +1852,7 @@ static int SigMatchPrepare(DetectEngineCtx *de_ctx)
             SigMatch *sm = s->init_data->smlists[i];
             while (sm != NULL) {
                 SigMatch *nsm = sm->next;
-                SigMatchFree(sm);
+                SigMatchFree(de_ctx, sm);
                 sm = nsm;
             }
         }
@@ -1895,35 +1897,29 @@ int SigGroupBuild(DetectEngineCtx *de_ctx)
     SigInitStandardMpmFactoryContexts(de_ctx);
 
     if (SigAddressPrepareStage1(de_ctx) != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
 
     if (SigAddressPrepareStage2(de_ctx) != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
 
     if (SigAddressPrepareStage3(de_ctx) != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
     if (SigAddressPrepareStage4(de_ctx) != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
 
     int r = DetectMpmPrepareBuiltinMpms(de_ctx);
     r |= DetectMpmPrepareAppMpms(de_ctx);
     r |= DetectMpmPreparePktMpms(de_ctx);
     if (r != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
 
     if (SigMatchPrepare(de_ctx) != 0) {
-        SCLogError(SC_ERR_DETECT_PREPARE, "initializing the detection engine failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "initializing the detection engine failed");
     }
 
 #ifdef PROFILING

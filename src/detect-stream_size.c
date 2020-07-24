@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -34,20 +34,20 @@
 #include "detect-stream_size.h"
 #include "stream-tcp-private.h"
 #include "util-debug.h"
+#include "util-byte.h"
 
 /**
  * \brief Regex for parsing our flow options
  */
 #define PARSE_REGEX  "^\\s*([A-z_]+)\\s*,\\s*([<=>!]+)\\s*,\\s*([0-9]+)\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 /*prototypes*/
 static int DetectStreamSizeMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectStreamSizeSetup (DetectEngineCtx *, Signature *, const char *);
-void DetectStreamSizeFree(void *);
+void DetectStreamSizeFree(DetectEngineCtx *de_ctx, void *);
 void DetectStreamSizeRegisterTests(void);
 
 /**
@@ -58,13 +58,13 @@ void DetectStreamSizeRegister(void)
 {
     sigmatch_table[DETECT_STREAM_SIZE].name = "stream_size";
     sigmatch_table[DETECT_STREAM_SIZE].desc = "match on amount of bytes of a stream";
-    sigmatch_table[DETECT_STREAM_SIZE].url = DOC_URL DOC_VERSION "/rules/flow-keywords.html#stream-size";
+    sigmatch_table[DETECT_STREAM_SIZE].url = "/rules/flow-keywords.html#stream-size";
     sigmatch_table[DETECT_STREAM_SIZE].Match = DetectStreamSizeMatch;
     sigmatch_table[DETECT_STREAM_SIZE].Setup = DetectStreamSizeSetup;
     sigmatch_table[DETECT_STREAM_SIZE].Free = DetectStreamSizeFree;
     sigmatch_table[DETECT_STREAM_SIZE].RegisterTests = DetectStreamSizeRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /**
@@ -173,30 +173,28 @@ static int DetectStreamSizeMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
 /**
  * \brief This function is used to parse stream options passed via stream_size: keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param streamstr Pointer to the user provided stream_size options
  *
  * \retval sd pointer to DetectStreamSizeData on success
  * \retval NULL on failure
  */
-static DetectStreamSizeData *DetectStreamSizeParse (const char *streamstr)
+static DetectStreamSizeData *DetectStreamSizeParse (DetectEngineCtx *de_ctx, const char *streamstr)
 {
-
     DetectStreamSizeData *sd = NULL;
     char *arg = NULL;
     char *value = NULL;
     char *mode = NULL;
-#define MAX_SUBSTRINGS 30
-    int ret = 0, res = 0;
+    int res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, streamstr, strlen(streamstr), 0, 0, ov, MAX_SUBSTRINGS);
+    int ret = DetectParsePcreExec(&parse_regex, streamstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret != 4) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, streamstr);
         goto error;
     }
 
     const char *str_ptr;
-
     res = pcre_get_substring((char *)streamstr, ov, MAX_SUBSTRINGS, 1, &str_ptr);
     if (res < 0) {
         SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
@@ -220,7 +218,7 @@ static DetectStreamSizeData *DetectStreamSizeParse (const char *streamstr)
 
     sd = SCMalloc(sizeof(DetectStreamSizeData));
     if (unlikely(sd == NULL))
-    goto error;
+        goto error;
     sd->ssize = 0;
     sd->flags = 0;
 
@@ -245,8 +243,10 @@ static DetectStreamSizeData *DetectStreamSizeParse (const char *streamstr)
     }
 
     /* set the value */
-    sd->ssize = (uint32_t)atoi(value);
-
+    if (StringParseUint32(&sd->ssize, 10, 0, (const char *)value) < 0) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for stream size: %s", value);
+        goto error;
+    }
     /* inspect our options and set the flags */
     if (strcmp(arg, "server") == 0) {
         sd->flags |= STREAM_SIZE_SERVER;
@@ -273,8 +273,7 @@ error:
     if (value != NULL)
         SCFree(value);
     if (sd != NULL)
-        DetectStreamSizeFree(sd);
-
+        DetectStreamSizeFree(de_ctx, sd);
     return NULL;
 }
 
@@ -290,29 +289,21 @@ error:
  */
 static int DetectStreamSizeSetup (DetectEngineCtx *de_ctx, Signature *s, const char *streamstr)
 {
-
-    DetectStreamSizeData *sd = NULL;
-    SigMatch *sm = NULL;
-
-    sd = DetectStreamSizeParse(streamstr);
+    DetectStreamSizeData *sd = DetectStreamSizeParse(de_ctx, streamstr);
     if (sd == NULL)
-        goto error;
+        return -1;
 
-    sm = SigMatchAlloc();
-    if (sm == NULL)
-        goto error;
+    SigMatch *sm = SigMatchAlloc();
+    if (sm == NULL) {
+        DetectStreamSizeFree(de_ctx, sd);
+        return -1;
+    }
 
     sm->type = DETECT_STREAM_SIZE;
     sm->ctx = (SigMatchCtx *)sd;
 
     SigMatchAppendSMToList(s, sm, DETECT_SM_LIST_MATCH);
-
     return 0;
-
-error:
-    if (sd != NULL) DetectStreamSizeFree(sd);
-    if (sm != NULL) SCFree(sm);
-    return -1;
 }
 
 /**
@@ -320,7 +311,7 @@ error:
  *
  * \param ptr pointer to DetectStreamSizeData
  */
-void DetectStreamSizeFree(void *ptr)
+void DetectStreamSizeFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectStreamSizeData *sd = (DetectStreamSizeData *)ptr;
     SCFree(sd);
@@ -336,11 +327,11 @@ static int DetectStreamSizeParseTest01 (void)
 {
     int result = 0;
     DetectStreamSizeData *sd = NULL;
-    sd = DetectStreamSizeParse("server,<,6");
+    sd = DetectStreamSizeParse(NULL, "server,<,6");
     if (sd != NULL) {
         if (sd->flags & STREAM_SIZE_SERVER && sd->mode == DETECTSSIZE_LT && sd->ssize == 6)
             result = 1;
-        DetectStreamSizeFree(sd);
+        DetectStreamSizeFree(NULL, sd);
     }
 
     return result;
@@ -355,11 +346,11 @@ static int DetectStreamSizeParseTest02 (void)
 {
     int result = 1;
     DetectStreamSizeData *sd = NULL;
-    sd = DetectStreamSizeParse("invalidoption,<,6");
+    sd = DetectStreamSizeParse(NULL, "invalidoption,<,6");
     if (sd != NULL) {
         printf("expected: NULL got 0x%02X %" PRIu32 ": ",sd->flags, sd->ssize);
         result = 0;
-        DetectStreamSizeFree(sd);
+        DetectStreamSizeFree(NULL, sd);
     }
 
     return result;
@@ -396,25 +387,25 @@ static int DetectStreamSizeParseTest03 (void)
     memset(&f, 0, sizeof(Flow));
     memset(&tcph, 0, sizeof(TCPHdr));
 
-    sd = DetectStreamSizeParse("client,>,8");
+    sd = DetectStreamSizeParse(NULL, "client,>,8");
     if (sd != NULL) {
         if (!(sd->flags & STREAM_SIZE_CLIENT)) {
             printf("sd->flags not STREAM_SIZE_CLIENT: ");
-            DetectStreamSizeFree(sd);
+            DetectStreamSizeFree(NULL, sd);
             SCFree(p);
             return 0;
         }
 
         if (sd->mode != DETECTSSIZE_GT) {
             printf("sd->mode not DETECTSSIZE_GT: ");
-            DetectStreamSizeFree(sd);
+            DetectStreamSizeFree(NULL, sd);
             SCFree(p);
             return 0;
         }
 
         if (sd->ssize != 8) {
             printf("sd->ssize is %"PRIu32", not 8: ", sd->ssize);
-            DetectStreamSizeFree(sd);
+            DetectStreamSizeFree(NULL, sd);
             SCFree(p);
             return 0;
         }
@@ -436,7 +427,7 @@ static int DetectStreamSizeParseTest03 (void)
     if (result == 0) {
         printf("result 0 != 1: ");
     }
-    DetectStreamSizeFree(sd);
+    DetectStreamSizeFree(NULL, sd);
     SCFree(p);
     return result;
 }
@@ -472,7 +463,7 @@ static int DetectStreamSizeParseTest04 (void)
     memset(&f, 0, sizeof(Flow));
     memset(&ip4h, 0, sizeof(IPV4Hdr));
 
-    sd = DetectStreamSizeParse(" client , > , 8 ");
+    sd = DetectStreamSizeParse(NULL, " client , > , 8 ");
     if (sd != NULL) {
         if (!(sd->flags & STREAM_SIZE_CLIENT) && sd->mode != DETECTSSIZE_GT && sd->ssize != 8) {
         SCFree(p);

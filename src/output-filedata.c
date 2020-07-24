@@ -33,6 +33,7 @@
 #include "conf.h"
 #include "util-profiling.h"
 #include "util-validate.h"
+#include "util-magic.h"
 
 typedef struct OutputLoggerThreadStore_ {
     void *thread_data;
@@ -43,6 +44,9 @@ typedef struct OutputLoggerThreadStore_ {
  *  data for the packet loggers. */
 typedef struct OutputLoggerThreadData_ {
     OutputLoggerThreadStore *store;
+#ifdef HAVE_MAGIC
+    magic_t magic_ctx;
+#endif
 } OutputLoggerThreadData;
 
 /* logger instance, a module + a output ctx,
@@ -125,17 +129,18 @@ static int CallLoggers(ThreadVars *tv, OutputLoggerThreadStore *store_list,
     return file_logged;
 }
 
-static void OutputFiledataLogFfc(ThreadVars *tv, OutputLoggerThreadStore *store,
+static void OutputFiledataLogFfc(ThreadVars *tv, OutputLoggerThreadData *td,
         Packet *p, FileContainer *ffc, const uint8_t call_flags,
         const bool file_close, const bool file_trunc, const uint8_t dir)
 {
     if (ffc != NULL) {
+        OutputLoggerThreadStore *store = td->store;
         File *ff;
         for (ff = ffc->head; ff != NULL; ff = ff->next) {
             uint8_t file_flags = call_flags;
 #ifdef HAVE_MAGIC
             if (FileForceMagic() && ff->magic == NULL) {
-                FilemagicGlobalLookup(ff);
+                FilemagicThreadLookup(&td->magic_ctx, ff);
             }
 #endif
             SCLogDebug("ff %p", ff);
@@ -213,7 +218,6 @@ static TmEcode OutputFiledataLog(ThreadVars *tv, Packet *p, void *thread_data)
     }
 
     OutputLoggerThreadData *op_thread_data = (OutputLoggerThreadData *)thread_data;
-    OutputLoggerThreadStore *store = op_thread_data->store;
 
     /* no flow, no files */
     Flow * const f = p->flow;
@@ -230,9 +234,9 @@ static TmEcode OutputFiledataLog(ThreadVars *tv, Packet *p, void *thread_data)
     FileContainer *ffc_ts = AppLayerParserGetFiles(f, STREAM_TOSERVER);
     FileContainer *ffc_tc = AppLayerParserGetFiles(f, STREAM_TOCLIENT);
     SCLogDebug("ffc_ts %p", ffc_ts);
-    OutputFiledataLogFfc(tv, store, p, ffc_ts, STREAM_TOSERVER, file_close_ts, file_trunc, STREAM_TOSERVER);
+    OutputFiledataLogFfc(tv, op_thread_data, p, ffc_ts, STREAM_TOSERVER, file_close_ts, file_trunc, STREAM_TOSERVER);
     SCLogDebug("ffc_tc %p", ffc_tc);
-    OutputFiledataLogFfc(tv, store, p, ffc_tc, STREAM_TOCLIENT, file_close_tc, file_trunc, STREAM_TOCLIENT);
+    OutputFiledataLogFfc(tv, op_thread_data, p, ffc_tc, STREAM_TOCLIENT, file_close_tc, file_trunc, STREAM_TOCLIENT);
 
     return TM_ECODE_OK;
 }
@@ -258,7 +262,7 @@ static void LogFiledataLogLoadWaldo(const char *path)
     if (fgets(line, (int)sizeof(line), fp) != NULL) {
         if (sscanf(line, "%10u", &id) == 1) {
             SCLogInfo("id %u", id);
-            (void) SC_ATOMIC_CAS(&g_file_store_id, 0, id);
+            SC_ATOMIC_SET(g_file_store_id, id);
         }
     }
     fclose(fp);
@@ -275,7 +279,7 @@ static void LogFiledataLogStoreWaldo(const char *path)
 {
     char line[16] = "";
 
-    if (SC_ATOMIC_GET(g_file_store_id) == 0) {
+    if (SC_ATOMIC_GET(g_file_store_id) == 1) {
         SCReturn;
     }
 
@@ -303,6 +307,14 @@ static TmEcode OutputFiledataLogThreadInit(ThreadVars *tv, const void *initdata,
     memset(td, 0x00, sizeof(*td));
 
     *data = (void *)td;
+
+#ifdef HAVE_MAGIC
+    td->magic_ctx = MagicInitContext();
+    if (td->magic_ctx == NULL) {
+        SCFree(td);
+        return TM_ECODE_FAILED;
+    }
+#endif
 
     SCLogDebug("OutputFiledataLogThreadInit happy (*data %p)", *data);
 
@@ -413,6 +425,10 @@ static TmEcode OutputFiledataLogThreadDeinit(ThreadVars *tv, void *thread_data)
     }
     SCMutexUnlock(&g_waldo_mutex);
 
+#ifdef HAVE_MAGIC
+    MagicDeinitContext(op_thread_data->magic_ctx);
+#endif
+
     SCFree(op_thread_data);
     return TM_ECODE_OK;
 }
@@ -448,6 +464,7 @@ void OutputFiledataLoggerRegister(void)
         OutputFiledataLogThreadDeinit, OutputFiledataLogExitPrintStats,
         OutputFiledataLog, OutputFiledataLoggerGetActiveCount);
     SC_ATOMIC_INIT(g_file_store_id);
+    SC_ATOMIC_SET(g_file_store_id, 1);
 }
 
 void OutputFiledataShutdown(void)

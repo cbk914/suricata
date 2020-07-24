@@ -17,6 +17,13 @@
 
 #![cfg_attr(feature = "strict", deny(warnings))]
 
+// Clippy lints we want to suppress due to style, or simply too noisy
+// and not a priority right now.
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::needless_return)]
+#![allow(clippy::redundant_field_names)]
+#![allow(clippy::len_zero)]
+
 #[macro_use]
 extern crate nom;
 
@@ -40,14 +47,15 @@ pub mod log;
 #[macro_use]
 pub mod core;
 
+#[macro_use]
+pub mod common;
 pub mod conf;
 pub mod json;
+pub mod jsonbuilder;
 #[macro_use]
 pub mod applayer;
 pub mod filecontainer;
 pub mod filetracker;
-#[macro_use]
-pub mod parser;
 pub mod kerberos;
 
 #[cfg(feature = "lua")]
@@ -58,6 +66,7 @@ pub mod nfs;
 pub mod ftp;
 pub mod smb;
 pub mod krb;
+pub mod dcerpc;
 
 pub mod ikev2;
 pub mod snmp;
@@ -66,5 +75,9 @@ pub mod ntp;
 pub mod tftp;
 pub mod dhcp;
 pub mod sip;
+pub mod rfb;
 pub mod applayertemplate;
 pub mod rdp;
+pub mod x509;
+pub mod asn1;
+pub mod ssh;

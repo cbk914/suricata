@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2017 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -44,21 +44,21 @@
 #include "queue.h"
 
 #ifdef PROFILE_LOCKING
-__thread uint64_t mutex_lock_contention;
-__thread uint64_t mutex_lock_wait_ticks;
-__thread uint64_t mutex_lock_cnt;
+thread_local uint64_t mutex_lock_contention;
+thread_local uint64_t mutex_lock_wait_ticks;
+thread_local uint64_t mutex_lock_cnt;
 
-__thread uint64_t spin_lock_contention;
-__thread uint64_t spin_lock_wait_ticks;
-__thread uint64_t spin_lock_cnt;
+thread_local uint64_t spin_lock_contention;
+thread_local uint64_t spin_lock_wait_ticks;
+thread_local uint64_t spin_lock_cnt;
 
-__thread uint64_t rww_lock_contention;
-__thread uint64_t rww_lock_wait_ticks;
-__thread uint64_t rww_lock_cnt;
+thread_local uint64_t rww_lock_contention;
+thread_local uint64_t rww_lock_wait_ticks;
+thread_local uint64_t rww_lock_cnt;
 
-__thread uint64_t rwr_lock_contention;
-__thread uint64_t rwr_lock_wait_ticks;
-__thread uint64_t rwr_lock_cnt;
+thread_local uint64_t rwr_lock_contention;
+thread_local uint64_t rwr_lock_wait_ticks;
+thread_local uint64_t rwr_lock_cnt;
 #endif
 
 #ifdef OS_FREEBSD
@@ -144,8 +144,6 @@ TmEcode TmThreadsSlotVarRun(ThreadVars *tv, Packet *p, TmSlot *slot)
 
     return TM_ECODE_OK;
 }
-
-#ifndef AFLFUZZ_PCAP_RUNMODE
 
 /** \internal
  *
@@ -349,122 +347,6 @@ error:
     pthread_exit((void *) -1);
     return NULL;
 }
-
-#endif /* NO  AFLFUZZ_PCAP_RUNMODE */
-
-#ifdef AFLFUZZ_PCAP_RUNMODE
-/** \brief simplified loop to speed up AFL
- *
- *  The loop runs in the caller's thread. No separate thread.
- */
-static void *TmThreadsSlotPktAcqLoopAFL(void *td)
-{
-    SCLogNotice("AFL mode starting");
-
-    ThreadVars *tv = (ThreadVars *)td;
-    TmSlot *s = tv->tm_slots;
-    char run = 1;
-    TmEcode r = TM_ECODE_OK;
-    TmSlot *slot = NULL;
-
-    PacketPoolInit();
-
-    /* check if we are setup properly */
-    if (s == NULL || s->PktAcqLoop == NULL || tv->tmqh_in == NULL || tv->tmqh_out == NULL) {
-        SCLogError(SC_ERR_FATAL, "TmSlot or ThreadVars badly setup: s=%p,"
-                                 " PktAcqLoop=%p, tmqh_in=%p,"
-                                 " tmqh_out=%p",
-                   s, s ? s->PktAcqLoop : NULL, tv->tmqh_in, tv->tmqh_out);
-        TmThreadsSetFlag(tv, THV_CLOSED | THV_RUNNING_DONE);
-        return NULL;
-    }
-
-    for (slot = s; slot != NULL; slot = slot->slot_next) {
-        if (slot->SlotThreadInit != NULL) {
-            void *slot_data = NULL;
-            r = slot->SlotThreadInit(tv, slot->slot_initdata, &slot_data);
-            if (r != TM_ECODE_OK) {
-                if (r == TM_ECODE_DONE) {
-                    EngineDone();
-                    TmThreadsSetFlag(tv, THV_CLOSED | THV_INIT_DONE | THV_RUNNING_DONE);
-                    goto error;
-                } else {
-                    TmThreadsSetFlag(tv, THV_CLOSED | THV_RUNNING_DONE);
-                    goto error;
-                }
-            }
-            (void)SC_ATOMIC_SET(slot->slot_data, slot_data);
-        }
-
-        /* if the flowworker module is the first, get the threads input queue */
-        if (slot == (TmSlot *)tv->tm_slots && (slot->tm_id == TMM_FLOWWORKER)) {
-            tv->stream_pq = tv->inq->pq;
-            tv->tm_flowworker = slot;
-            SCLogDebug("pre-stream packetqueue %p (inq)", tv->stream_pq);
-        /* setup a queue */
-        } else if (slot->tm_id == TMM_FLOWWORKER) {
-            tv->stream_pq_local = SCCalloc(1, sizeof(PacketQueue));
-            if (tv->stream_pq_local == NULL)
-                FatalError(SC_ERR_MEM_ALLOC, "failed to alloc PacketQueue");
-            SCMutexInit(&tv->stream_pq_local->mutex_q, NULL);
-            tv->stream_pq = tv->stream_pq_local;
-            tv->tm_flowworker = slot;
-            SCLogDebug("pre-stream packetqueue %p (local)", tv->stream_pq);
-        }
-    }
-
-    StatsSetupPrivate(tv);
-
-    TmThreadsSetFlag(tv, THV_INIT_DONE);
-
-    while(run) {
-        /* run right away */
-
-        r = s->PktAcqLoop(tv, SC_ATOMIC_GET(s->slot_data), s);
-
-        if (r == TM_ECODE_FAILED) {
-            TmThreadsSetFlag(tv, THV_FAILED);
-            run = 0;
-        }
-        if (TmThreadsCheckFlag(tv, THV_KILL_PKTACQ) || suricata_ctl_flags) {
-            run = 0;
-        }
-        if (r == TM_ECODE_DONE) {
-            run = 0;
-        }
-    }
-    StatsSyncCounters(tv);
-
-    TmThreadsSetFlag(tv, THV_FLOW_LOOP);
-
-    TmThreadsSetFlag(tv, THV_RUNNING_DONE);
-
-    PacketPoolDestroy();
-
-    for (slot = s; slot != NULL; slot = slot->slot_next) {
-        if (slot->SlotThreadExitPrintStats != NULL) {
-            slot->SlotThreadExitPrintStats(tv, SC_ATOMIC_GET(slot->slot_data));
-        }
-
-        if (slot->SlotThreadDeinit != NULL) {
-            r = slot->SlotThreadDeinit(tv, SC_ATOMIC_GET(slot->slot_data));
-            if (r != TM_ECODE_OK) {
-                TmThreadsSetFlag(tv, THV_CLOSED);
-                goto error;
-            }
-        }
-    }
-
-    tv->stream_pq = NULL;
-    SCLogDebug("%s ending", tv->name);
-    TmThreadsSetFlag(tv, THV_CLOSED);
-    return NULL;
-
-error:
-    tv->stream_pq = NULL;
-    return NULL;
-}
-#endif
 
 static void *TmThreadsSlotVar(void *td)
 {
@@ -688,11 +570,7 @@ static TmEcode TmThreadSetSlots(ThreadVars *tv, const char *name, void *(*fn_p)(
     if (strcmp(name, "varslot") == 0) {
         tv->tm_func = TmThreadsSlotVar;
     } else if (strcmp(name, "pktacqloop") == 0) {
-#ifndef AFLFUZZ_PCAP_RUNMODE
         tv->tm_func = TmThreadsSlotPktAcqLoop;
-#else
-        tv->tm_func = TmThreadsSlotPktAcqLoopAFL;
-#endif
     } else if (strcmp(name, "management") == 0) {
         tv->tm_func = TmThreadsManagement;
     } else if (strcmp(name, "command") == 0) {
@@ -748,7 +626,7 @@ void TmSlotSetFuncAppend(ThreadVars *tv, TmModule *tm, const void *data)
     if (unlikely(slot == NULL))
         return;
     memset(slot, 0, sizeof(TmSlot));
-    SC_ATOMIC_INIT(slot->slot_data);
+    SC_ATOMIC_INITPTR(slot->slot_data);
     slot->SlotThreadInit = tm->ThreadInit;
     slot->slot_initdata = data;
     if (tm->Func) {
@@ -1785,9 +1663,9 @@ TmEcode TmThreadSpawn(ThreadVars *tv)
 void TmThreadInitMC(ThreadVars *tv)
 {
     if ( (tv->ctrl_mutex = SCMalloc(sizeof(*tv->ctrl_mutex))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in TmThreadInitMC.  "
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in TmThreadInitMC.  "
                    "Exiting...");
-        exit(EXIT_FAILURE);
     }
 
     if (SCCtrlMutexInit(tv->ctrl_mutex, NULL) != 0) {
@@ -1796,15 +1674,14 @@ void TmThreadInitMC(ThreadVars *tv)
     }
 
     if ( (tv->ctrl_cond = SCMalloc(sizeof(*tv->ctrl_cond))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in TmThreadInitMC.  "
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in TmThreadInitMC.  "
                    "Exiting...");
-        exit(EXIT_FAILURE);
     }
 
     if (SCCtrlCondInit(tv->ctrl_cond, NULL) != 0) {
-        SCLogError(SC_ERR_FATAL, "Error initializing the tv->cond condition "
+        FatalError(SC_ERR_FATAL, "Error initializing the tv->cond condition "
                    "variable");
-        exit(EXIT_FAILURE);
     }
 
     return;
@@ -2101,7 +1978,10 @@ typedef struct Thread_ {
     int type;
     int in_use;         /**< bool to indicate this is in use */
 
-    struct timeval ts;  /**< current time of this thread (offline mode) */
+    struct timeval pktts;   /**< current packet time of this thread
+                             *   (offline mode) */
+    uint32_t sys_sec_stamp; /**< timestamp in seconds of the real system
+                             *   time when the pktts was last updated. */
 } Thread;
 
 typedef struct Threads_ {
@@ -2223,42 +2103,95 @@ void TmThreadsSetThreadTimestamp(const int id, const struct timeval *ts)
 
     int idx = id - 1;
     Thread *t = &thread_store.threads[idx];
-    t->ts.tv_sec = ts->tv_sec;
-    t->ts.tv_usec = ts->tv_usec;
+    t->pktts = *ts;
+    struct timeval systs;
+    gettimeofday(&systs, NULL);
+    t->sys_sec_stamp = (uint32_t)systs.tv_sec;
     SCMutexUnlock(&thread_store_lock);
 }
 
-#define COPY_TIMESTAMP(src,dst) ((dst)->tv_sec = (src)->tv_sec, (dst)->tv_usec = (src)->tv_usec) // XXX unify with flow-util.h
-void TmreadsGetMinimalTimestamp(struct timeval *ts)
+bool TmThreadsTimeSubsysIsReady(void)
+{
+    bool ready = true;
+    SCMutexLock(&thread_store_lock);
+    for (size_t s = 0; s < thread_store.threads_size; s++) {
+        Thread *t = &thread_store.threads[s];
+        if (!t->in_use)
+            break;
+        if (t->sys_sec_stamp == 0) {
+            ready = false;
+            break;
+        }
+    }
+    SCMutexUnlock(&thread_store_lock);
+    return ready;
+}
+
+void TmThreadsInitThreadsTimestamp(const struct timeval *ts)
+{
+    struct timeval systs;
+    gettimeofday(&systs, NULL);
+    SCMutexLock(&thread_store_lock);
+    for (size_t s = 0; s < thread_store.threads_size; s++) {
+        Thread *t = &thread_store.threads[s];
+        if (!t->in_use)
+            break;
+        t->pktts = *ts;
+        t->sys_sec_stamp = (uint32_t)systs.tv_sec;
+    }
+    SCMutexUnlock(&thread_store_lock);
+}
+
+void TmThreadsGetMinimalTimestamp(struct timeval *ts)
 {
     struct timeval local, nullts;
     memset(&local, 0, sizeof(local));
     memset(&nullts, 0, sizeof(nullts));
     int set = 0;
     size_t s;
+    struct timeval systs;
+    gettimeofday(&systs, NULL);
 
     SCMutexLock(&thread_store_lock);
     for (s = 0; s < thread_store.threads_size; s++) {
         Thread *t = &thread_store.threads[s];
-        if (t == NULL || t->in_use == 0)
-            continue;
-        if (!(timercmp(&t->ts, &nullts, ==))) {
+        if (t->in_use == 0)
+            break;
+        if (!(timercmp(&t->pktts, &nullts, ==))) {
+            /* ignore sleeping threads */
+            if (t->sys_sec_stamp + 1 < (uint32_t)systs.tv_sec)
+                continue;
+
             if (!set) {
-                local.tv_sec = t->ts.tv_sec;
-                local.tv_usec = t->ts.tv_usec;
+                local = t->pktts;
                 set = 1;
             } else {
-                if (timercmp(&t->ts, &local, <)) {
-                    COPY_TIMESTAMP(&t->ts, &local);
+                if (timercmp(&t->pktts, &local, <)) {
+                    local = t->pktts;
                 }
             }
         }
     }
     SCMutexUnlock(&thread_store_lock);
-    COPY_TIMESTAMP(&local, ts);
+    *ts = local;
     SCLogDebug("ts->tv_sec %"PRIuMAX, (uintmax_t)ts->tv_sec);
 }
-#undef COPY_TIMESTAMP
+
+uint16_t TmThreadsGetWorkerThreadMax()
+{
+    uint16_t ncpus = UtilCpuGetNumProcessorsOnline();
+    int thread_max = TmThreadGetNbThreads(WORKER_CPU_SET);
+    /* always create at least one thread */
+    if (thread_max == 0)
+        thread_max = ncpus * threading_detect_ratio;
+    if (thread_max < 1)
+        thread_max = 1;
+    if (thread_max > 1024) {
+        SCLogWarning(SC_ERR_RUNMODE, "limited number of 'worker' threads to 1024. Wanted %d", thread_max);
+        thread_max = 1024;
+    }
+    return thread_max;
+}
 
 /**
  *  \retval r 1 if packet was accepted, 0 otherwise

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -40,14 +40,13 @@
 
 #define PARSE_REGEX "^\\s*(\"\\s*)?([0-9]+)(\\s*\")?\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectIcmpIdMatch(DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectIcmpIdSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectIcmpIdRegisterTests(void);
-void DetectIcmpIdFree(void *);
+void DetectIcmpIdFree(DetectEngineCtx *, void *);
 static int PrefilterSetupIcmpId(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
 static bool PrefilterIcmpIdIsPrefilterable(const Signature *s);
 
@@ -58,7 +57,7 @@ void DetectIcmpIdRegister (void)
 {
     sigmatch_table[DETECT_ICMP_ID].name = "icmp_id";
     sigmatch_table[DETECT_ICMP_ID].desc = "check for a ICMP ID";
-    sigmatch_table[DETECT_ICMP_ID].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#icmp-id";
+    sigmatch_table[DETECT_ICMP_ID].url = "/rules/header-keywords.html#icmp-id";
     sigmatch_table[DETECT_ICMP_ID].Match = DetectIcmpIdMatch;
     sigmatch_table[DETECT_ICMP_ID].Setup = DetectIcmpIdSetup;
     sigmatch_table[DETECT_ICMP_ID].Free = DetectIcmpIdFree;
@@ -67,7 +66,7 @@ void DetectIcmpIdRegister (void)
     sigmatch_table[DETECT_ICMP_ID].SupportsPrefilter = PrefilterIcmpIdIsPrefilterable;
     sigmatch_table[DETECT_ICMP_ID].SetupPrefilter = PrefilterSetupIcmpId;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static inline bool GetIcmpId(Packet *p, uint16_t *id)
@@ -148,20 +147,20 @@ static int DetectIcmpIdMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
 /**
  * \brief This function is used to parse icmp_id option passed via icmp_id: keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param icmpidstr Pointer to the user provided icmp_id options
  *
  * \retval iid pointer to DetectIcmpIdData on success
  * \retval NULL on failure
  */
-static DetectIcmpIdData *DetectIcmpIdParse (const char *icmpidstr)
+static DetectIcmpIdData *DetectIcmpIdParse (DetectEngineCtx *de_ctx, const char *icmpidstr)
 {
     DetectIcmpIdData *iid = NULL;
     char *substr[3] = {NULL, NULL, NULL};
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, icmpidstr, strlen(icmpidstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, icmpidstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1 || ret > 4) {
         SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", icmpidstr);
         goto error;
@@ -195,9 +194,8 @@ static DetectIcmpIdData *DetectIcmpIdParse (const char *icmpidstr)
         }
     }
 
-    /** \todo can ByteExtractStringUint16 do this? */
     uint16_t id = 0;
-    if (ByteExtractStringUint16(&id, 10, 0, substr[1]) < 0) {
+    if (StringParseUint16(&id, 10, 0, substr[1]) < 0) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp id %s is not "
                                         "valid", substr[1]);
         goto error;
@@ -213,7 +211,7 @@ error:
     for (i = 0; i < 3; i++) {
         if (substr[i] != NULL) SCFree(substr[i]);
     }
-    if (iid != NULL) DetectIcmpIdFree(iid);
+    if (iid != NULL) DetectIcmpIdFree(de_ctx, iid);
     return NULL;
 
 }
@@ -233,7 +231,7 @@ static int DetectIcmpIdSetup (DetectEngineCtx *de_ctx, Signature *s, const char 
     DetectIcmpIdData *iid = NULL;
     SigMatch *sm = NULL;
 
-    iid = DetectIcmpIdParse(icmpidstr);
+    iid = DetectIcmpIdParse(de_ctx, icmpidstr);
     if (iid == NULL) goto error;
 
     sm = SigMatchAlloc();
@@ -248,7 +246,7 @@ static int DetectIcmpIdSetup (DetectEngineCtx *de_ctx, Signature *s, const char 
     return 0;
 
 error:
-    if (iid != NULL) DetectIcmpIdFree(iid);
+    if (iid != NULL) DetectIcmpIdFree(de_ctx, iid);
     if (sm != NULL) SCFree(sm);
     return -1;
 
@@ -259,7 +257,7 @@ error:
  *
  * \param ptr pointer to DetectIcmpIdData
  */
-void DetectIcmpIdFree (void *ptr)
+void DetectIcmpIdFree (DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectIcmpIdData *iid = (DetectIcmpIdData *)ptr;
     SCFree(iid);
@@ -329,9 +327,9 @@ static bool PrefilterIcmpIdIsPrefilterable(const Signature *s)
 static int DetectIcmpIdParseTest01 (void)
 {
     DetectIcmpIdData *iid = NULL;
-    iid = DetectIcmpIdParse("300");
+    iid = DetectIcmpIdParse(NULL, "300");
     if (iid != NULL && iid->id == htons(300)) {
-        DetectIcmpIdFree(iid);
+        DetectIcmpIdFree(NULL, iid);
         return 1;
     }
     return 0;
@@ -344,9 +342,9 @@ static int DetectIcmpIdParseTest01 (void)
 static int DetectIcmpIdParseTest02 (void)
 {
     DetectIcmpIdData *iid = NULL;
-    iid = DetectIcmpIdParse("  300  ");
+    iid = DetectIcmpIdParse(NULL, "  300  ");
     if (iid != NULL && iid->id == htons(300)) {
-        DetectIcmpIdFree(iid);
+        DetectIcmpIdFree(NULL, iid);
         return 1;
     }
     return 0;
@@ -359,9 +357,9 @@ static int DetectIcmpIdParseTest02 (void)
 static int DetectIcmpIdParseTest03 (void)
 {
     DetectIcmpIdData *iid = NULL;
-    iid = DetectIcmpIdParse("\"300\"");
+    iid = DetectIcmpIdParse(NULL, "\"300\"");
     if (iid != NULL && iid->id == htons(300)) {
-        DetectIcmpIdFree(iid);
+        DetectIcmpIdFree(NULL, iid);
         return 1;
     }
     return 0;
@@ -374,9 +372,9 @@ static int DetectIcmpIdParseTest03 (void)
 static int DetectIcmpIdParseTest04 (void)
 {
     DetectIcmpIdData *iid = NULL;
-    iid = DetectIcmpIdParse("   \"   300 \"");
+    iid = DetectIcmpIdParse(NULL, "   \"   300 \"");
     if (iid != NULL && iid->id == htons(300)) {
-        DetectIcmpIdFree(iid);
+        DetectIcmpIdFree(NULL, iid);
         return 1;
     }
     return 0;
@@ -389,9 +387,9 @@ static int DetectIcmpIdParseTest04 (void)
 static int DetectIcmpIdParseTest05 (void)
 {
     DetectIcmpIdData *iid = NULL;
-    iid = DetectIcmpIdParse("\"300");
+    iid = DetectIcmpIdParse(NULL, "\"300");
     if (iid == NULL) {
-        DetectIcmpIdFree(iid);
+        DetectIcmpIdFree(NULL, iid);
         return 1;
     }
     return 0;

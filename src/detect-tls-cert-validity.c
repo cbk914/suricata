@@ -1,4 +1,4 @@
-/* Copyright (C) 2015-2018 Open Information Security Foundation
+/* Copyright (C) 2015-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -53,8 +53,7 @@
  *   [tls_notbefore|tls_notafter]:[<|>]<date string>[<><date string>];
  */
 #define PARSE_REGEX "^\\s*(<|>)?\\s*([ -:TW0-9]+)\\s*(?:(<>)\\s*([ -:TW0-9]+))?\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectTlsValidityMatch (DetectEngineThreadCtx *, Flow *,
                                    uint8_t, void *, void *, const Signature *,
@@ -73,7 +72,7 @@ static void TlsNotAfterRegisterTests(void);
 static void TlsExpiredRegisterTests(void);
 static void TlsValidRegisterTests(void);
 #endif /* UNITTESTS */
-static void DetectTlsValidityFree(void *);
+static void DetectTlsValidityFree(DetectEngineCtx *, void *);
 static int g_tls_validity_buffer_id = 0;
 
 static int DetectEngineInspectTlsValidity(ThreadVars *tv,
@@ -89,7 +88,7 @@ void DetectTlsValidityRegister (void)
 {
     sigmatch_table[DETECT_AL_TLS_NOTBEFORE].name = "tls_cert_notbefore";
     sigmatch_table[DETECT_AL_TLS_NOTBEFORE].desc = "match TLS certificate notBefore field";
-    sigmatch_table[DETECT_AL_TLS_NOTBEFORE].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#tls-cert-notbefore";
+    sigmatch_table[DETECT_AL_TLS_NOTBEFORE].url = "/rules/tls-keywords.html#tls-cert-notbefore";
     sigmatch_table[DETECT_AL_TLS_NOTBEFORE].AppLayerTxMatch = DetectTlsValidityMatch;
     sigmatch_table[DETECT_AL_TLS_NOTBEFORE].Setup = DetectTlsNotBeforeSetup;
     sigmatch_table[DETECT_AL_TLS_NOTBEFORE].Free = DetectTlsValidityFree;
@@ -99,7 +98,7 @@ void DetectTlsValidityRegister (void)
 
     sigmatch_table[DETECT_AL_TLS_NOTAFTER].name = "tls_cert_notafter";
     sigmatch_table[DETECT_AL_TLS_NOTAFTER].desc = "match TLS certificate notAfter field";
-    sigmatch_table[DETECT_AL_TLS_NOTAFTER].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#tls-cert-notafter";
+    sigmatch_table[DETECT_AL_TLS_NOTAFTER].url = "/rules/tls-keywords.html#tls-cert-notafter";
     sigmatch_table[DETECT_AL_TLS_NOTAFTER].AppLayerTxMatch = DetectTlsValidityMatch;
     sigmatch_table[DETECT_AL_TLS_NOTAFTER].Setup = DetectTlsNotAfterSetup;
     sigmatch_table[DETECT_AL_TLS_NOTAFTER].Free = DetectTlsValidityFree;
@@ -109,7 +108,7 @@ void DetectTlsValidityRegister (void)
 
     sigmatch_table[DETECT_AL_TLS_EXPIRED].name = "tls_cert_expired";
     sigmatch_table[DETECT_AL_TLS_EXPIRED].desc = "match expired TLS certificates";
-    sigmatch_table[DETECT_AL_TLS_EXPIRED].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#tls-cert-expired";
+    sigmatch_table[DETECT_AL_TLS_EXPIRED].url = "/rules/tls-keywords.html#tls-cert-expired";
     sigmatch_table[DETECT_AL_TLS_EXPIRED].AppLayerTxMatch = DetectTlsValidityMatch;
     sigmatch_table[DETECT_AL_TLS_EXPIRED].Setup = DetectTlsExpiredSetup;
     sigmatch_table[DETECT_AL_TLS_EXPIRED].Free = DetectTlsValidityFree;
@@ -120,7 +119,7 @@ void DetectTlsValidityRegister (void)
 
     sigmatch_table[DETECT_AL_TLS_VALID].name = "tls_cert_valid";
     sigmatch_table[DETECT_AL_TLS_VALID].desc = "match valid TLS certificates";
-    sigmatch_table[DETECT_AL_TLS_VALID].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#tls-cert-valid";
+    sigmatch_table[DETECT_AL_TLS_VALID].url = "/rules/tls-keywords.html#tls-cert-valid";
     sigmatch_table[DETECT_AL_TLS_VALID].AppLayerTxMatch = DetectTlsValidityMatch;
     sigmatch_table[DETECT_AL_TLS_VALID].Setup = DetectTlsValidSetup;
     sigmatch_table[DETECT_AL_TLS_VALID].Free = DetectTlsValidityFree;
@@ -129,7 +128,7 @@ void DetectTlsValidityRegister (void)
     sigmatch_table[DETECT_AL_TLS_VALID].RegisterTests = TlsValidRegisterTests;
 #endif
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     DetectAppLayerInspectEngineRegister("tls_validity",
             ALPROTO_TLS, SIG_FLAG_TOCLIENT, TLS_STATE_CERT_READY,
@@ -310,7 +309,6 @@ static time_t DateStringToEpoch (char *string)
 static DetectTlsValidityData *DetectTlsValidityParse (const char *rawstr)
 {
     DetectTlsValidityData *dd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char mode[2] = "";
@@ -318,8 +316,7 @@ static DetectTlsValidityData *DetectTlsValidityParse (const char *rawstr)
     char value2[20] = "";
     char range[3] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0,
-                    0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH, "Parse error %s", rawstr);
         goto error;
@@ -468,7 +465,7 @@ static int DetectTlsExpiredSetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectTlsValidityFree(dd);
+    DetectTlsValidityFree(de_ctx, dd);
     if (sm)
         SCFree(sm);
     return -1;
@@ -519,7 +516,7 @@ static int DetectTlsValidSetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectTlsValidityFree(dd);
+    DetectTlsValidityFree(de_ctx, dd);
     if (sm)
         SCFree(sm);
     return -1;
@@ -615,7 +612,7 @@ static int DetectTlsValiditySetup (DetectEngineCtx *de_ctx, Signature *s,
     return 0;
 
 error:
-    DetectTlsValidityFree(dd);
+    DetectTlsValidityFree(de_ctx, dd);
     if (sm)
         SCFree(sm);
     return -1;
@@ -627,7 +624,7 @@ error:
  *
  * \param de_ptr Pointer to DetectTlsValidityData.
  */
-void DetectTlsValidityFree(void *de_ptr)
+void DetectTlsValidityFree(DetectEngineCtx *de_ctx, void *de_ptr)
 {
     DetectTlsValidityData *dd = (DetectTlsValidityData *)de_ptr;
     if (dd)

@@ -48,6 +48,22 @@
 #define PCAP_RECONNECT_TIMEOUT 500000
 
 /**
+ * \brief 64bit pcap stats counters.
+ *
+ * libpcap only supports 32bit counters. They will eventually wrap around.
+ *
+ * Keep track of libpcap counters as 64bit counters to keep on counting even
+ * if libpcap's 32bit counters wrap around.
+ * Requires pcap_stats() to be called before 32bit stats wrap around twice,
+ * which we do.
+ */
+typedef struct PcapStats64_ {
+    uint64_t ps_recv;
+    uint64_t ps_drop;
+    uint64_t ps_ifdrop;
+} PcapStats64;
+
+/**
  * \brief Structure to hold thread specific variables.
  */
 typedef struct PcapThreadVars_
@@ -67,9 +83,8 @@ typedef struct PcapThreadVars_
     int datalink;
 
     /* counters */
-    uint32_t pkts;
+    uint64_t pkts;
     uint64_t bytes;
-    uint32_t errs;
 
     uint16_t capture_kernel_packets;
     uint16_t capture_kernel_drops;
@@ -88,6 +103,8 @@ typedef struct PcapThreadVars_
     ChecksumValidationMode checksum_mode;
 
     LiveDevice *livedev;
+
+    PcapStats64 last_stats64;
 } PcapThreadVars;
 
 static TmEcode ReceivePcapThreadInit(ThreadVars *, const void *, void **);
@@ -99,12 +116,14 @@ static TmEcode DecodePcapThreadInit(ThreadVars *, const void *, void **);
 static TmEcode DecodePcapThreadDeinit(ThreadVars *tv, void *data);
 static TmEcode DecodePcap(ThreadVars *, Packet *, void *);
 
+void SourcePcapRegisterTests(void);
+
 /** protect pcap_compile and pcap_setfilter, as they are not thread safe:
  *  http://seclists.org/tcpdump/2009/q1/62 */
 static SCMutex pcap_bpf_compile_lock = SCMUTEX_INITIALIZER;
 
 /**
- * \brief Registration Function for RecievePcap.
+ * \brief Registration Function for ReceivePcap.
  */
 void TmModuleReceivePcapRegister (void)
 {
@@ -115,6 +134,7 @@ void TmModuleReceivePcapRegister (void)
     tmm_modules[TMM_RECEIVEPCAP].ThreadExitPrintStats = ReceivePcapThreadExitStats;
     tmm_modules[TMM_RECEIVEPCAP].cap_flags = SC_CAP_NET_RAW;
     tmm_modules[TMM_RECEIVEPCAP].flags = TM_FLAG_RECEIVE_TM;
+    tmm_modules[TMM_RECEIVEPCAP].RegisterTests = SourcePcapRegisterTests;
 }
 
 /**
@@ -129,14 +149,52 @@ void TmModuleDecodePcapRegister (void)
     tmm_modules[TMM_DECODEPCAP].flags = TM_FLAG_DECODE_TM;
 }
 
+/**
+ * \brief Update 64 bit |last| value from |current32| value taking one
+ * wrap-around into account.
+ */
+static inline void UpdatePcapStatsValue64(uint64_t *last, uint32_t current32)
+{
+    /* uint64_t -> uint32_t is defined behaviour. It slices lower 32bits. */
+    uint32_t last32 = *last;
+
+    /* Branchless code as wrap-around is defined for unsigned */
+    *last += (uint32_t)(current32 - last32);
+
+    /* Same calculation as:
+    if (likely(current32 >= last32)) {
+        *last += current32 - last32;
+    } else {
+        *last += (1ull << 32) + current32 - last32;
+    }
+    */
+}
+
+/**
+ * \brief Update 64 bit |last| stat values with values from |current|
+ * 32 bit pcap_stat.
+ */
+static inline void UpdatePcapStats64(
+        PcapStats64 *last, const struct pcap_stat *current)
+{
+    UpdatePcapStatsValue64(&last->ps_recv, current->ps_recv);
+    UpdatePcapStatsValue64(&last->ps_drop, current->ps_drop);
+    UpdatePcapStatsValue64(&last->ps_ifdrop, current->ps_ifdrop);
+}
+
 static inline void PcapDumpCounters(PcapThreadVars *ptv)
 {
     struct pcap_stat pcap_s;
     if (likely((pcap_stats(ptv->pcap_handle, &pcap_s) >= 0))) {
-        StatsSetUI64(ptv->tv, ptv->capture_kernel_packets, pcap_s.ps_recv);
-        StatsSetUI64(ptv->tv, ptv->capture_kernel_drops, pcap_s.ps_drop);
-        (void) SC_ATOMIC_SET(ptv->livedev->drop, pcap_s.ps_drop);
-        StatsSetUI64(ptv->tv, ptv->capture_kernel_ifdrops, pcap_s.ps_ifdrop);
+        UpdatePcapStats64(&ptv->last_stats64, &pcap_s);
+
+        StatsSetUI64(ptv->tv, ptv->capture_kernel_packets,
+                ptv->last_stats64.ps_recv);
+        StatsSetUI64(
+                ptv->tv, ptv->capture_kernel_drops, ptv->last_stats64.ps_drop);
+        (void)SC_ATOMIC_SET(ptv->livedev->drop, ptv->last_stats64.ps_drop);
+        StatsSetUI64(ptv->tv, ptv->capture_kernel_ifdrops,
+                ptv->last_stats64.ps_ifdrop);
     }
 }
 
@@ -201,12 +259,10 @@ static void PcapCallbackLoop(char *user, struct pcap_pkthdr *h, u_char *pkt)
 
     switch (ptv->checksum_mode) {
         case CHECKSUM_VALIDATION_AUTO:
-            if (ptv->livedev->ignore_checksum) {
-                p->flags |= PKT_IGNORE_CHECKSUM;
-            } else if (ChecksumAutoModeCheck(ptv->pkts,
+            if (ChecksumAutoModeCheck(ptv->pkts,
                         SC_ATOMIC_GET(ptv->livedev->pkts),
                         SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-                ptv->livedev->ignore_checksum = 1;
+                ptv->checksum_mode = CHECKSUM_VALIDATION_DISABLE;
                 p->flags |= PKT_IGNORE_CHECKSUM;
             }
             break;
@@ -508,11 +564,11 @@ static void ReceivePcapThreadExitStats(ThreadVars *tv, void *data)
     if (pcap_stats(ptv->pcap_handle, &pcap_s) < 0) {
         SCLogError(SC_ERR_STAT,"(%s) Failed to get pcap_stats: %s",
                 tv->name, pcap_geterr(ptv->pcap_handle));
-        SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 "",
-                tv->name, ptv->pkts, ptv->bytes);
+        SCLogInfo("(%s) Packets %" PRIu64 ", bytes %" PRIu64 "", tv->name,
+                ptv->pkts, ptv->bytes);
     } else {
-        SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 "",
-                tv->name, ptv->pkts, ptv->bytes);
+        SCLogInfo("(%s) Packets %" PRIu64 ", bytes %" PRIu64 "", tv->name,
+                ptv->pkts, ptv->bytes);
 
         /* these numbers are not entirely accurate as ps_recv contains packets
          * that are still waiting to be processed at exit. ps_drop only contains
@@ -522,11 +578,18 @@ static void ReceivePcapThreadExitStats(ThreadVars *tv, void *data)
          * Note: ps_recv includes dropped packets and should be considered total.
          * Unless we start to look at ps_ifdrop which isn't supported everywhere.
          */
-        SCLogInfo("(%s) Pcap Total:%" PRIu64 " Recv:%" PRIu64 " Drop:%" PRIu64 " (%02.1f%%).",
-                tv->name, (uint64_t)pcap_s.ps_recv,
-                (uint64_t)pcap_s.ps_recv - (uint64_t)pcap_s.ps_drop,
-                (uint64_t)pcap_s.ps_drop,
-                (((float)(uint64_t)pcap_s.ps_drop)/(float)(uint64_t)pcap_s.ps_recv)*100);
+        UpdatePcapStats64(&ptv->last_stats64, &pcap_s);
+        float drop_percent =
+                likely(ptv->last_stats64.ps_recv > 0)
+                        ? (((float)ptv->last_stats64.ps_drop) /
+                                  (float)ptv->last_stats64.ps_recv) *
+                                  100
+                        : 0;
+        SCLogInfo("(%s) Pcap Total:%" PRIu64 " Recv:%" PRIu64 " Drop:%" PRIu64
+                  " (%02.1f%%).",
+                tv->name, ptv->last_stats64.ps_recv,
+                ptv->last_stats64.ps_recv - ptv->last_stats64.ps_drop,
+                ptv->last_stats64.ps_drop, drop_percent);
     }
 }
 
@@ -550,30 +613,7 @@ static TmEcode DecodePcap(ThreadVars *tv, Packet *p, void *data)
     /* update counters */
     DecodeUpdatePacketCounters(tv, dtv, p);
 
-    /* call the decoder */
-    switch(p->datalink) {
-        case LINKTYPE_LINUX_SLL:
-            DecodeSll(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_ETHERNET:
-            DecodeEthernet(tv, dtv, p,GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_PPP:
-            DecodePPP(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_RAW:
-        case LINKTYPE_GRE_OVER_IP:
-            DecodeRaw(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_NULL:
-            DecodeNull(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        default:
-            SCLogError(SC_ERR_DATALINK_UNIMPLEMENTED, "Error: datalink "
-                    "type %" PRId32 " not yet supported in module "
-                    "DecodePcap", p->datalink);
-            break;
-    }
+    DecodeLinkLayer(tv, dtv, p->datalink, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
 
     PacketDecodeFinalize(tv, dtv, p);
 
@@ -663,4 +703,22 @@ void PcapTranslateIPToDevice(char *pcap_dev, size_t len)
     freeaddrinfo(ai_list);
 
     pcap_freealldevs(alldevsp);
+}
+
+/*
+ *  unittests
+ */
+
+#ifdef UNITTESTS
+#include "tests/source-pcap.c"
+#endif /* UNITTESTS */
+
+/**
+ *  \brief  Register the Unit tests for pcap source
+ */
+void SourcePcapRegisterTests(void)
+{
+#ifdef UNITTESTS
+    SourcePcapRegisterStatsTests();
+#endif /* UNITTESTS */
 }

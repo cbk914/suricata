@@ -1,4 +1,4 @@
-/* Copyright (C) 2017 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -38,15 +38,14 @@
  * \brief Regex for parsing our keyword options
  */
 #define PARSE_REGEX  "^\\s*(stor|retr)\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 /* Prototypes of functions registered in DetectFtpdataRegister below */
 static int DetectFtpdataMatch(DetectEngineThreadCtx *,
         Flow *, uint8_t, void *, void *,
         const Signature *, const SigMatchCtx *);
 static int DetectFtpdataSetup (DetectEngineCtx *, Signature *, const char *);
-static void DetectFtpdataFree (void *);
+static void DetectFtpdataFree (DetectEngineCtx *, void *);
 static void DetectFtpdataRegisterTests (void);
 static int DetectEngineInspectFtpdataGeneric(ThreadVars *tv,
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
@@ -65,7 +64,7 @@ void DetectFtpdataRegister(void) {
     sigmatch_table[DETECT_FTPDATA].name = "ftpdata_command";
     /* description: listed in "suricata --list-keywords=all" */
     sigmatch_table[DETECT_FTPDATA].desc = "match FTP command triggering a FTP data channel";
-    sigmatch_table[DETECT_FTPDATA].url = DOC_URL DOC_VERSION "/rules/ftp-keywords.html#ftpdata-command";
+    sigmatch_table[DETECT_FTPDATA].url = "/rules/ftp-keywords.html#ftpdata-command";
     sigmatch_table[DETECT_FTPDATA].AppLayerTxMatch = DetectFtpdataMatch;
     /* setup function is called during signature parsing, when the ftpcommand
      * keyword is encountered in the rule */
@@ -86,7 +85,7 @@ void DetectFtpdataRegister(void) {
     g_ftpdata_buffer_id = DetectBufferTypeGetByName("ftpdata_command");
 
     /* set up the PCRE for keyword parsing */
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static int DetectEngineInspectFtpdataGeneric(ThreadVars *tv,
@@ -145,12 +144,9 @@ static DetectFtpdataData *DetectFtpdataParse(const char *ftpcommandstr)
 {
     DetectFtpdataData *ftpcommandd = NULL;
     char arg1[5] = "";
-#define MAX_SUBSTRINGS 30
     int ov[MAX_SUBSTRINGS];
 
-    int ret = pcre_exec(parse_regex, parse_regex_study,
-                    ftpcommandstr, strlen(ftpcommandstr),
-                    0, 0, ov, MAX_SUBSTRINGS);
+    int ret = DetectParsePcreExec(&parse_regex, ftpcommandstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret != 2) {
         SCLogError(SC_ERR_PCRE_MATCH, "parse error, ret %" PRId32 "", ret);
         goto error;
@@ -205,7 +201,7 @@ static int DetectFtpdataSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
 
     SigMatch *sm = SigMatchAlloc();
     if (sm == NULL) {
-        DetectFtpdataFree(ftpcommandd);
+        DetectFtpdataFree(de_ctx, ftpcommandd);
         return -1;
     }
     sm->type = DETECT_FTPDATA;
@@ -220,7 +216,7 @@ static int DetectFtpdataSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
  *
  * \param ptr pointer to DetectFtpdataData
  */
-static void DetectFtpdataFree(void *ptr) {
+static void DetectFtpdataFree(DetectEngineCtx *de_ctx, void *ptr) {
     DetectFtpdataData *ftpcommandd = (DetectFtpdataData *)ptr;
 
     /* do more specific cleanup here, if needed */
@@ -235,7 +231,7 @@ static int DetectFtpdataParseTest01(void)
     DetectFtpdataData *ftpcommandd = DetectFtpdataParse("stor");
     FAIL_IF_NULL(ftpcommandd);
     FAIL_IF(!(ftpcommandd->command == FTP_COMMAND_STOR));
-    DetectFtpdataFree(ftpcommandd);
+    DetectFtpdataFree(NULL, ftpcommandd);
     PASS;
 }
 

@@ -174,11 +174,11 @@ TmEcode NoAFPSupportExit(ThreadVars *tv, const void *initdata, void **data)
 
 #ifndef TP_STATUS_USER_BUSY
 /* for new use latest bit available in tp_status */
-#define TP_STATUS_USER_BUSY (1 << 31)
+#define TP_STATUS_USER_BUSY     BIT_U32(31)
 #endif
 
 #ifndef TP_STATUS_VLAN_VALID
-#define TP_STATUS_VLAN_VALID (1 << 4)
+#define TP_STATUS_VLAN_VALID    BIT_U32(4)
 #endif
 
 enum {
@@ -384,9 +384,6 @@ static void AFPPeerClean(AFPPeer *peer)
 {
     if (peer->flags & AFP_SOCK_PROTECT)
         SCMutexDestroy(&peer->sock_protect);
-    SC_ATOMIC_DESTROY(peer->socket);
-    SC_ATOMIC_DESTROY(peer->if_idx);
-    SC_ATOMIC_DESTROY(peer->state);
     SCFree(peer);
 }
 
@@ -510,7 +507,7 @@ static void AFPPeersListReachedInc(void)
     if (peerslist.turn == 0)
         return;
 
-    if (SC_ATOMIC_ADD(peerslist.reached, 1) == peerslist.turn) {
+    if ((SC_ATOMIC_ADD(peerslist.reached, 1) + 1) == peerslist.turn) {
         SCLogInfo("All AFP capture threads are running.");
         (void)SC_ATOMIC_SET(peerslist.reached, 0);
         /* Set turn to 0 to skip syncrhonization when ReceiveAFPLoop is
@@ -680,12 +677,10 @@ static int AFPRead(AFPThreadVars *ptv)
     if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
         p->flags |= PKT_IGNORE_CHECKSUM;
     } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-        if (ptv->livedev->ignore_checksum) {
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        } else if (ChecksumAutoModeCheck(ptv->pkts,
+        if (ChecksumAutoModeCheck(ptv->pkts,
                                           SC_ATOMIC_GET(ptv->livedev->pkts),
                                           SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-            ptv->livedev->ignore_checksum = 1;
+            ptv->checksum_mode = CHECKSUM_VALIDATION_DISABLE;
             p->flags |= PKT_IGNORE_CHECKSUM;
         }
     } else {
@@ -997,12 +992,10 @@ static int AFPReadFromRing(AFPThreadVars *ptv)
         if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
             p->flags |= PKT_IGNORE_CHECKSUM;
         } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-            if (ptv->livedev->ignore_checksum) {
-                p->flags |= PKT_IGNORE_CHECKSUM;
-            } else if (ChecksumAutoModeCheck(ptv->pkts,
+            if (ChecksumAutoModeCheck(ptv->pkts,
                         SC_ATOMIC_GET(ptv->livedev->pkts),
                         SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-                ptv->livedev->ignore_checksum = 1;
+                ptv->checksum_mode = CHECKSUM_VALIDATION_DISABLE;
                 p->flags |= PKT_IGNORE_CHECKSUM;
             }
         } else {
@@ -1110,12 +1103,10 @@ static inline int AFPParsePacketV3(AFPThreadVars *ptv, struct tpacket_block_desc
     if (ptv->checksum_mode == CHECKSUM_VALIDATION_DISABLE) {
         p->flags |= PKT_IGNORE_CHECKSUM;
     } else if (ptv->checksum_mode == CHECKSUM_VALIDATION_AUTO) {
-        if (ptv->livedev->ignore_checksum) {
-            p->flags |= PKT_IGNORE_CHECKSUM;
-        } else if (ChecksumAutoModeCheck(ptv->pkts,
+        if (ChecksumAutoModeCheck(ptv->pkts,
                     SC_ATOMIC_GET(ptv->livedev->pkts),
                     SC_ATOMIC_GET(ptv->livedev->invalid_checksums))) {
-            ptv->livedev->ignore_checksum = 1;
+            ptv->checksum_mode = CHECKSUM_VALIDATION_DISABLE;
             p->flags |= PKT_IGNORE_CHECKSUM;
         }
     } else {
@@ -1231,7 +1222,7 @@ static int AFPDerefSocket(AFPPeer* peer)
     if (peer == NULL)
         return 1;
 
-    if (SC_ATOMIC_SUB(peer->sock_usage, 1) == 0) {
+    if (SC_ATOMIC_SUB(peer->sock_usage, 1) == 1) {
         if (SC_ATOMIC_GET(peer->state) == AFP_STATE_DOWN) {
             SCLogInfo("Cleaning socket connected to '%s'", peer->iface);
             close(SC_ATOMIC_GET(peer->socket));
@@ -1268,7 +1259,7 @@ static void AFPSwitchState(AFPThreadVars *ptv, int state)
 #endif
         if (ptv->socket != -1) {
             /* we need to wait for all packets to return data */
-            if (SC_ATOMIC_SUB(ptv->mpeer->sock_usage, 1) == 0) {
+            if (SC_ATOMIC_SUB(ptv->mpeer->sock_usage, 1) == 1) {
                 SCLogDebug("Cleaning socket connected to '%s'", ptv->iface);
                 munmap(ptv->ring_buf, ptv->ring_buflen);
                 close(ptv->socket);
@@ -1998,7 +1989,7 @@ int AFPIsFanoutSupported(int cluster_id)
     if (fd < 0)
         return 0;
 
-    uint16_t mode = PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_DEFRAG;
+    uint32_t mode = PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_DEFRAG;
     uint16_t id = 1;
     uint32_t option = (mode << 16) | (id & 0xffff);
     int r = setsockopt(fd, SOL_PACKET, PACKET_FANOUT,(void *)&option, sizeof(option));
@@ -2167,7 +2158,7 @@ static int AFPCreateSocket(AFPThreadVars *ptv, char *devname, int verbose)
 #ifdef HAVE_PACKET_FANOUT
     /* add binded socket to fanout group */
     if (ptv->threads > 1) {
-        uint16_t mode = ptv->cluster_type;
+        uint32_t mode = ptv->cluster_type;
         uint16_t id = ptv->cluster_id;
         uint32_t option = (mode << 16) | (id & 0xffff);
         r = setsockopt(ptv->socket, SOL_PACKET, PACKET_FANOUT,(void *)&option, sizeof(option));
@@ -2898,27 +2889,7 @@ TmEcode DecodeAFP(ThreadVars *tv, Packet *p, void *data)
     }
 
     /* call the decoder */
-    switch (p->datalink) {
-        case LINKTYPE_ETHERNET:
-            DecodeEthernet(tv, dtv, p,GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_LINUX_SLL:
-            DecodeSll(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_PPP:
-            DecodePPP(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_RAW:
-        case LINKTYPE_GRE_OVER_IP:
-            DecodeRaw(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        case LINKTYPE_NULL:
-            DecodeNull(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
-            break;
-        default:
-            SCLogError(SC_ERR_DATALINK_UNIMPLEMENTED, "Error: datalink type %" PRId32 " not yet supported in module DecodeAFP", p->datalink);
-            break;
-    }
+    DecodeLinkLayer(tv, dtv, p->datalink, p, GET_PKT_DATA(p), GET_PKT_LEN(p));
 
     PacketDecodeFinalize(tv, dtv, p);
 

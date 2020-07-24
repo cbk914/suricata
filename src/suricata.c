@@ -121,8 +121,6 @@
 #include "app-layer-parser.h"
 #include "app-layer-htp.h"
 #include "app-layer-ssl.h"
-#include "app-layer-dns-tcp.h"
-#include "app-layer-dns-udp.h"
 #include "app-layer-ssh.h"
 #include "app-layer-ftp.h"
 #include "app-layer-smtp.h"
@@ -132,7 +130,6 @@
 #include "app-layer-smb.h"
 #include "app-layer-dcerpc.h"
 
-#include "util-decode-der.h"
 #include "util-ebpf.h"
 #include "util-radix-tree.h"
 #include "util-host-os-info.h"
@@ -157,7 +154,6 @@
 #include "runmodes.h"
 #include "runmode-unittests.h"
 
-#include "util-decode-asn1.h"
 #include "util-debug.h"
 #include "util-error.h"
 #include "util-daemon.h"
@@ -284,6 +280,7 @@ int RunmodeGetCurrent(void)
  *  construction, etc.
  */
 
+#ifndef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
 static void SignalHandlerSigint(/*@unused@*/ int sig)
 {
     sigint_count = 1;
@@ -292,6 +289,8 @@ static void SignalHandlerSigterm(/*@unused@*/ int sig)
 {
     sigterm_count = 1;
 }
+#endif
+
 #ifndef OS_WIN32
 /**
  * SIGUSR2 handler.  Just set sigusr2_count.  The main loop will act on
@@ -313,20 +312,6 @@ static void SignalHandlerSigHup(/*@unused@*/ int sig)
 }
 #endif
 
-#ifdef DBG_MEM_ALLOC
-#ifndef _GLOBAL_MEM_
-#define _GLOBAL_MEM_
-/* This counter doesn't complain realloc's(), it's gives
- * an aproximation for the startup */
-size_t global_mem = 0;
-#ifdef DBG_MEM_ALLOC_SKIP_STARTUP
-uint8_t print_mem_flag = 0;
-#else
-uint8_t print_mem_flag = 1;
-#endif
-#endif
-#endif
-
 void GlobalsInitPreConfig(void)
 {
     TimeInit();
@@ -339,13 +324,6 @@ static void GlobalsDestroy(SCInstance *suri)
     HostShutdown();
     HTPFreeConfig();
     HTPAtExitPrintStats();
-
-#ifdef DBG_MEM_ALLOC
-    SCLogInfo("Total memory used (without SCFree()): %"PRIdMAX, (intmax_t)global_mem);
-#ifdef DBG_MEM_ALLOC_SKIP_STARTUP
-    print_mem_flag = 0;
-#endif
-#endif
 
     AppLayerHtpPrintStats();
 
@@ -371,9 +349,6 @@ static void GlobalsDestroy(SCInstance *suri)
         SCReferenceConfDeinit();
         SCClassConfDeinit();
     }
-#ifdef HAVE_MAGIC
-    MagicDeinit();
-#endif
     TmqhCleanup();
     TmModuleRunDeInit();
     ParseSizeDeinit();
@@ -391,8 +366,6 @@ static void GlobalsDestroy(SCInstance *suri)
 #ifdef NFQ
     NFQContextsClean();
 #endif
-
-    SC_ATOMIC_DESTROY(engine_stage);
 
 #ifdef BUILD_HYPERSCAN
     MpmHSGlobalCleanup();
@@ -494,10 +467,9 @@ static void SetBpfStringFromFile(char *filename)
     size_t nm = 0;
 
     if (EngineModeIsIPS()) {
-        SCLogError(SC_ERR_NOT_SUPPORTED,
-                   "BPF filter not available in IPS mode."
-                   " Use firewall filtering if possible.");
-        exit(EXIT_FAILURE);
+                   FatalError(SC_ERR_FATAL,
+                              "BPF filter not available in IPS mode."
+                              " Use firewall filtering if possible.");
     }
 
 #ifdef OS_WIN32
@@ -660,6 +632,9 @@ static void PrintUsage(const char *progname)
     printf("\t--windivert <filter>                 : run in inline WinDivert mode\n");
     printf("\t--windivert-forward <filter>         : run in inline WinDivert mode, as a gateway\n");
 #endif
+#ifdef HAVE_LIBNET11
+    printf("\t--reject-dev <dev>                   : send reject packets from this interface\n");
+#endif
     printf("\t--set name=value                     : set a configuration value\n");
     printf("\n");
     printf("\nTo run the engine with default configuration on "
@@ -673,7 +648,7 @@ static void PrintBuildInfo(void)
     const char *bits = "<unknown>-bits";
     const char *endian = "<unknown>-endian";
     char features[2048] = "";
-    const char *tls = "pthread key";
+    const char *tls;
 
     printf("This is %s version %s\n", PROG_NAME, GetProgramVersion());
 
@@ -738,8 +713,13 @@ static void PrintBuildInfo(void)
 #ifdef PROFILE_LOCKING
     strlcat(features, "PROFILE_LOCKING ", sizeof(features));
 #endif
-#ifdef TLS
+#if defined(TLS_C11) || defined(TLS_GNU)
     strlcat(features, "TLS ", sizeof(features));
+#endif
+#if defined(TLS_C11)
+    strlcat(features, "TLS_C11 ", sizeof(features));
+#elif defined(TLS_GNU)
+    strlcat(features, "TLS_GNU ", sizeof(features));
 #endif
 #ifdef HAVE_MAGIC
     strlcat(features, "MAGIC ", sizeof(features));
@@ -833,8 +813,12 @@ static void PrintBuildInfo(void)
 #ifdef CLS
     printf("L1 cache line size (CLS)=%d\n", CLS);
 #endif
-#ifdef TLS
+#if defined(TLS_C11)
+    tls = "_Thread_local";
+#elif defined(TLS_GNU)
     tls = "__thread";
+#else
+#error "Unsupported thread local"
 #endif
     printf("thread local storage method: %s\n", tls);
 
@@ -1033,6 +1017,15 @@ static void SCInstanceInit(SCInstance *suri, const char *progname)
 #endif
 }
 
+const char *GetDocURL(void)
+{
+    const char *prog_ver = GetProgramVersion();
+    if (strstr(prog_ver, "RELEASE") != NULL) {
+        return DOC_URL "suricata-" PROG_VER;
+    }
+    return DOC_URL "latest";
+}
+
 /** \brief get string with program version
  *
  *  Get the program version as passed to us from AC_INIT
@@ -1169,254 +1162,6 @@ static bool IsLogDirectoryWritable(const char* str)
     return false;
 }
 
-static void ParseCommandLineAFL(const char *opt_name, char *opt_arg)
-{
-#ifdef AFLFUZZ_RULES
-    if(strcmp(opt_name, "afl-rules") == 0) {
-        MpmTableSetup();
-        SpmTableSetup();
-        exit(RuleParseDataFromFile(opt_arg));
-    } else
-#endif
-#ifdef AFLFUZZ_APPLAYER
-    if(strcmp(opt_name, "afl-http-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterHTPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_HTTP, opt_arg));
-    } else if(strcmp(opt_name, "afl-http") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterHTPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_HTTP, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-tls-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSSLParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_TLS, opt_arg));
-    } else if(strcmp(opt_name, "afl-tls") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSSLParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_TLS, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-dns-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        RegisterDNSUDPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_UDP, ALPROTO_DNS, opt_arg));
-    } else if(strcmp(opt_name, "afl-dns") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterDNSUDPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_UDP, ALPROTO_DNS, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-dnstcp-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        RegisterDNSTCPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_DNS, opt_arg));
-    } else if(strcmp(opt_name, "afl-dnstcp") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterDNSTCPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_DNS, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-ssh-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        RegisterSSHParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_SSH, opt_arg));
-    } else if(strcmp(opt_name, "afl-ssh") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSSHParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_SSH, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-ftp-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        IPPairInitConfig(FLOW_QUIET);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterFTPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_FTP, opt_arg));
-    } else if(strcmp(opt_name, "afl-ftp") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        IPPairInitConfig(FLOW_QUIET);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterFTPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_FTP, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-smtp-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSMTPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_SMTP, opt_arg));
-    } else if(strcmp(opt_name, "afl-smtp") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSMTPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_SMTP, opt_arg));
-
-    } else if(strcmp(opt_name, "afl-smb-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        RegisterSMBParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_SMB, opt_arg));
-    } else if(strcmp(opt_name, "afl-smb") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterSMBParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_SMB, opt_arg));
-    } else if(strstr(opt_name, "afl-dcerpc-request") != NULL) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterDCERPCParsers();
-        if (strcmp(opt_name, "afl-dcerpc-request") == 0)
-            exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_DCERPC, opt_arg));
-        else
-            exit(AppLayerParserRequestFromFileSerie(IPPROTO_TCP, ALPROTO_DCERPC, opt_arg));
-    } else if(strstr(opt_name, "afl-dcerpc") != NULL) {
-        //printf("arg: //%s\n", opt_arg);
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        AppLayerParserSetup();
-        RegisterDCERPCParsers();
-        if (strcmp(opt_name, "afl-dcerpc") == 0)
-            exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_DCERPC, opt_arg));
-        else
-            exit(AppLayerParserFromFileSerie(IPPROTO_TCP, ALPROTO_DCERPC, opt_arg));
-    } else if(strcmp(opt_name, "afl-modbus-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterModbusParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_MODBUS, opt_arg));
-    } else if(strcmp(opt_name, "afl-modbus") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterModbusParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_MODBUS, opt_arg));
-    } else if(strcmp(opt_name, "afl-enip-request") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterENIPTCPParsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_ENIP, opt_arg));
-    } else if(strcmp(opt_name, "afl-enip") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        AppLayerParserSetup();
-        RegisterENIPTCPParsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_ENIP, opt_arg));
-    } else if(strcmp(opt_name, "afl-dnp3-request") == 0) {
-        AppLayerParserSetup();
-        RegisterDNP3Parsers();
-        exit(AppLayerParserRequestFromFile(IPPROTO_TCP, ALPROTO_DNP3, opt_arg));
-    } else if(strcmp(opt_name, "afl-dnp3") == 0) {
-        AppLayerParserSetup();
-        RegisterDNP3Parsers();
-        exit(AppLayerParserFromFile(IPPROTO_TCP, ALPROTO_DNP3, opt_arg));
-    } else
-#endif
-#ifdef AFLFUZZ_MIME
-    if(strcmp(opt_name, "afl-mime") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        exit(MimeParserDataFromFile(opt_arg));
-    } else
-#endif
-#ifdef AFLFUZZ_DECODER
-    if(strstr(opt_name, "afl-decoder-ppp") != NULL) {
-        StatsInit();
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        if (strcmp(opt_name, "afl-decoder-ppp") == 0)
-            exit(DecoderParseDataFromFile(opt_arg, DecodePPP));
-        else
-            exit(DecoderParseDataFromFileSerie(opt_arg, DecodePPP));
-    } else if(strstr(opt_name, "afl-decoder-ipv4") != NULL) {
-        StatsInit();
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        if (strcmp(opt_name, "afl-decoder-ipv4") == 0)
-            exit(DecoderParseDataFromFile(opt_arg, AFLDecodeIPV4));
-        else
-            exit(DecoderParseDataFromFileSerie(opt_arg, AFLDecodeIPV4));
-    } else if(strstr(opt_name, "afl-decoder-ipv6") != NULL) {
-        StatsInit();
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        if (strcmp(opt_name, "afl-decoder-ipv6") == 0)
-            exit(DecoderParseDataFromFile(opt_arg, AFLDecodeIPV6));
-        else
-            exit(DecoderParseDataFromFileSerie(opt_arg, AFLDecodeIPV6));
-    } else if(strstr(opt_name, "afl-decoder-ethernet") != NULL) {
-        StatsInit();
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        if (strcmp(opt_name, "afl-decoder-ethernet") == 0)
-            exit(DecoderParseDataFromFile(opt_arg, DecodeEthernet));
-        else
-            exit(DecoderParseDataFromFileSerie(opt_arg, DecodeEthernet));
-    } else if(strstr(opt_name, "afl-decoder-erspan") != NULL) {
-        StatsInit();
-        MpmTableSetup();
-        SpmTableSetup();
-        AppLayerProtoDetectSetup();
-        if (strcmp(opt_name, "afl-decoder-erspan") == 0)
-            exit(DecoderParseDataFromFile(opt_arg, DecodeERSPAN));
-        else
-            exit(DecoderParseDataFromFileSerie(opt_arg, DecodeERSPAN));
-    } else
-#endif
-#ifdef AFLFUZZ_DER
-    if(strcmp(opt_name, "afl-der") == 0) {
-        //printf("arg: //%s\n", opt_arg);
-        exit(DerParseDataFromFile(opt_arg));
-    } else
-#endif
-    {
-        abort();
-    }
-}
-
 static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
 {
     int opt;
@@ -1429,9 +1174,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
     int list_keywords = 0;
     int build_info = 0;
     int conf_test = 0;
-#ifdef AFLFUZZ_CONF_TEST
-    int conf_test_force_success = 0;
-#endif
     int engine_analysis = 0;
     int ret = TM_ECODE_OK;
 
@@ -1456,48 +1198,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"simulate-ips", 0, 0 , 0},
         {"no-random", 0, &g_disable_randomness, 1},
         {"strict-rule-keywords", optional_argument, 0, 0},
-
-        /* AFL app-layer options. */
-        {"afl-http-request", required_argument, 0 , 0},
-        {"afl-http", required_argument, 0 , 0},
-        {"afl-tls-request", required_argument, 0 , 0},
-        {"afl-tls", required_argument, 0 , 0},
-        {"afl-dns-request", required_argument, 0 , 0},
-        {"afl-dns", required_argument, 0 , 0},
-        {"afl-ssh-request", required_argument, 0 , 0},
-        {"afl-ssh", required_argument, 0 , 0},
-        {"afl-ftp-request", required_argument, 0 , 0},
-        {"afl-ftp", required_argument, 0 , 0},
-        {"afl-smtp-request", required_argument, 0 , 0},
-        {"afl-smtp", required_argument, 0 , 0},
-        {"afl-smb-request", required_argument, 0 , 0},
-        {"afl-smb", required_argument, 0 , 0},
-        {"afl-modbus-request", required_argument, 0 , 0},
-        {"afl-modbus", required_argument, 0 , 0},
-        {"afl-enip-request", required_argument, 0 , 0},
-        {"afl-enip", required_argument, 0 , 0},
-        {"afl-mime", required_argument, 0 , 0},
-        {"afl-dnp3-request", required_argument, 0, 0},
-        {"afl-dnp3", required_argument, 0, 0},
-        {"afl-dcerpc", required_argument, 0, 0},
-        {"afl-dcerpc-serie", required_argument, 0, 0},
-        {"afl-dcerpc-request", required_argument, 0, 0},
-        {"afl-dcerpc-request-serie", required_argument, 0, 0},
-
-        /* Other AFL options. */
-        {"afl-rules", required_argument, 0 , 0},
-        {"afl-mime", required_argument, 0 , 0},
-        {"afl-decoder-ppp", required_argument, 0 , 0},
-        {"afl-decoder-ppp-serie", required_argument, 0 , 0},
-        {"afl-decoder-ethernet", required_argument, 0 , 0},
-        {"afl-decoder-ethernet-serie", required_argument, 0 , 0},
-        {"afl-decoder-erspan", required_argument, 0 , 0},
-        {"afl-decoder-erspan-serie", required_argument, 0 , 0},
-        {"afl-decoder-ipv4", required_argument, 0 , 0},
-        {"afl-decoder-ipv4-serie", required_argument, 0 , 0},
-        {"afl-decoder-ipv6", required_argument, 0 , 0},
-        {"afl-decoder-ipv6-serie", required_argument, 0 , 0},
-        {"afl-der", required_argument, 0, 0},
 
 #ifdef BUILD_UNIX_SOCKET
         {"unix-socket", optional_argument, 0, 0},
@@ -1531,12 +1231,12 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         {"windivert", required_argument, 0, 0},
         {"windivert-forward", required_argument, 0, 0},
 #endif
+#ifdef HAVE_LIBNET11
+        {"reject-dev", required_argument, 0, 0},
+#endif
         {"set", required_argument, 0, 0},
 #ifdef HAVE_NFLOG
         {"nflog", optional_argument, 0, 0},
-#endif
-#ifdef AFLFUZZ_CONF_TEST
-        {"afl-parse-rules", 0, &conf_test_force_success, 1},
 #endif
         {NULL, 0, NULL, 0}
     };
@@ -1637,8 +1337,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 if (ParseCommandLinePcapLive(suri, optarg) != TM_ECODE_OK) {
                     return TM_ECODE_FAILED;
                 }
-            } else if(strncmp((long_opts[option_index]).name, "afl-", 4) == 0) {
-                ParseCommandLineAFL((long_opts[option_index]).name, optarg);
             } else if(strcmp((long_opts[option_index]).name, "simulate-ips") == 0) {
                 SCLogInfo("Setting IPS mode");
                 EngineModeSetIPS();
@@ -1830,15 +1528,28 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
                 SCLogError(SC_ERR_WINDIVERT_NOSUPPORT,"WinDivert not enabled. Make sure to pass --enable-windivert to configure when building.");
                 return TM_ECODE_FAILED;
 #endif /* WINDIVERT */
+            } else if(strcmp((long_opts[option_index]).name, "reject-dev") == 0) {
+#ifdef HAVE_LIBNET11
+                extern char *g_reject_dev;
+                extern uint16_t g_reject_dev_mtu;
+                g_reject_dev = optarg;
+                int mtu = GetIfaceMTU(g_reject_dev);
+                if (mtu > 0) {
+                    g_reject_dev_mtu = (uint16_t)mtu;
+                }
+#else
+                SCLogError(SC_ERR_LIBNET_NOT_ENABLED,
+                        "Libnet 1.1 support not enabled. Compile Suricata with libnet support.");
+                return TM_ECODE_FAILED;
+#endif
             }
             else if (strcmp((long_opts[option_index]).name, "set") == 0) {
                 if (optarg != NULL) {
                     /* Quick validation. */
                     char *val = strchr(optarg, '=');
                     if (val == NULL) {
-                        SCLogError(SC_ERR_CMD_LINE,
-                                "Invalid argument for --set, must be key=val.");
-                        exit(EXIT_FAILURE);
+                                FatalError(SC_ERR_FATAL,
+                                           "Invalid argument for --set, must be key=val.");
                     }
                     if (!ConfSetFromString(optarg, 1)) {
                         fprintf(stderr, "Failed to set configuration value %s.",
@@ -2117,11 +1828,6 @@ static TmEcode ParseCommandLine(int argc, char** argv, SCInstance *suri)
         SCLogError(SC_ERR_INITIALIZATION, "can't use -s/-S when detection is disabled");
         return TM_ECODE_FAILED;
     }
-#ifdef AFLFUZZ_CONF_TEST
-    if (conf_test && conf_test_force_success) {
-        (void)ConfSetFinal("engine.init-failure-fatal", "0");
-    }
-#endif
 
     if ((suri->run_mode == RUNMODE_UNIX_SOCKET) && suri->set_logdir) {
         SCLogError(SC_ERR_INITIALIZATION,
@@ -2375,7 +2081,11 @@ static int StartInternalRunMode(SCInstance *suri, int argc, char **argv)
             ListKeywords(suri->keyword_info);
             return TM_ECODE_DONE;
         case RUNMODE_LIST_APP_LAYERS:
-            ListAppLayerProtocols();
+            if (suri->conf_filename != NULL) {
+                ListAppLayerProtocols(suri->conf_filename);
+            } else {
+                ListAppLayerProtocols(DEFAULT_CONF_FILE);
+            }
             return TM_ECODE_DONE;
         case RUNMODE_PRINT_VERSION:
             PrintVersion();
@@ -2590,7 +2300,7 @@ static void PostRunStartedDetectSetup(const SCInstance *suri)
     }
 }
 
-static void PostConfLoadedDetectSetup(SCInstance *suri)
+void PostConfLoadedDetectSetup(SCInstance *suri)
 {
     DetectEngineCtx *de_ctx = NULL;
     if (!suri->disabled_detect) {
@@ -2603,9 +2313,8 @@ static void PostConfLoadedDetectSetup(SCInstance *suri)
         if (mt_enabled)
             (void)ConfGetBool("multi-detect.default", &default_tenant);
         if (DetectEngineMultiTenantSetup() == -1) {
-            SCLogError(SC_ERR_INITIALIZATION, "initializing multi-detect "
-                    "detection engine contexts failed.");
-            exit(EXIT_FAILURE);
+            FatalError(SC_ERR_FATAL, "initializing multi-detect "
+                       "detection engine contexts failed.");
         }
         if (suri->delayed_detect && suri->run_mode != RUNMODE_CONF_TEST) {
             de_ctx = DetectEngineCtxInitStubForDD();
@@ -2615,9 +2324,8 @@ static void PostConfLoadedDetectSetup(SCInstance *suri)
             de_ctx = DetectEngineCtxInit();
         }
         if (de_ctx == NULL) {
-            SCLogError(SC_ERR_INITIALIZATION, "initializing detection engine "
-                    "context failed.");
-            exit(EXIT_FAILURE);
+            FatalError(SC_ERR_FATAL, "initializing detection engine "
+                       "context failed.");
         }
 
         if (de_ctx->type == DETECT_ENGINE_TYPE_NORMAL) {
@@ -2769,7 +2477,7 @@ int PostConfLoadedSetup(SCInstance *suri)
     const char *custom_umask;
     if (ConfGet("umask", &custom_umask) == 1) {
         uint16_t mask;
-        if (ByteExtractStringUint16(&mask, 8, strlen(custom_umask),
+        if (StringParseUint16(&mask, 8, strlen(custom_umask),
                                     custom_umask) > 0) {
             umask((mode_t)mask);
         }
@@ -2874,11 +2582,6 @@ int PostConfLoadedSetup(SCInstance *suri)
     }
 
     HostInitConfig(HOST_VERBOSE);
-#ifdef HAVE_MAGIC
-    if (MagicInit() != 0)
-        SCReturnInt(TM_ECODE_FAILED);
-#endif
-    SCAsn1LoadConfig();
 
     CoredumpLoadConfig();
 
@@ -3081,12 +2784,11 @@ int SuricataMain(int argc, char **argv)
 
     /* Wait till all the threads have been initialized */
     if (TmThreadWaitOnThreadInit() == TM_ECODE_FAILED) {
-        SCLogError(SC_ERR_INITIALIZATION, "Engine initialization failed, "
+        FatalError(SC_ERR_FATAL, "Engine initialization failed, "
                    "aborting...");
-        exit(EXIT_FAILURE);
     }
 
-    (void) SC_ATOMIC_CAS(&engine_stage, SURICATA_INIT, SURICATA_RUNTIME);
+    SC_ATOMIC_SET(engine_stage, SURICATA_RUNTIME);
     PacketPoolPostRunmodes();
 
     /* Un-pause all the paused threads */
@@ -3094,18 +2796,11 @@ int SuricataMain(int argc, char **argv)
 
     PostRunStartedDetectSetup(&suricata);
 
-#ifdef DBG_MEM_ALLOC
-    SCLogInfo("Memory used at startup: %"PRIdMAX, (intmax_t)global_mem);
-#ifdef DBG_MEM_ALLOC_SKIP_STARTUP
-    print_mem_flag = 1;
-#endif
-#endif
-
     SCPledge();
     SuricataMainLoop(&suricata);
 
     /* Update the engine stage/status flag */
-    (void) SC_ATOMIC_CAS(&engine_stage, SURICATA_RUNTIME, SURICATA_DEINIT);
+    SC_ATOMIC_SET(engine_stage, SURICATA_DEINIT);
 
     UnixSocketKillSocketThread();
     PostRunDeinit(suricata.run_mode, &suricata.start_time);

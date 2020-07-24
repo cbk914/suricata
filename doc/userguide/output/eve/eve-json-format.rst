@@ -980,6 +980,10 @@ Fields
 
 * "proto_version": The protocol version transported with the ssh protocol (1.x, 2.x)
 * "software_version": The software version used by end user
+* "hassh": MD5 of hassh algorithms of client or server
+* "hassh.string": hassh algorithms of client or server
+
+Hassh must be enabled in the Suricata config file (set 'app-layer.protocols.ssh.hassh' to 'yes').
 
 Example of SSH logging:
 
@@ -989,10 +993,14 @@ Example of SSH logging:
     "client": {
         "proto_version": "2.0",
         "software_version": "OpenSSH_6.7",
+        "hassh": "ec7378c1a92f5a8dde7e8b7a1ddf33d1",
+        "hassh.string": "curve25519-sha256,diffie-hellman-group14-sha256,diffie-hellman-group14-sha1,ext-info-c",
      },
     "server": {
         "proto_version": "2.0",
         "software_version": "OpenSSH_6.7",
+        "hassh": "ec7378c1a92f5a8dde7e8b7a1ddf33d1",
+        "hassh.string": "curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256",
      }
   }
 
@@ -1226,3 +1234,64 @@ RDP logging, with transition to TLS:
       "16ed2aa0495f259d4f5d99edada570d1"
     ]
   }
+
+Event type: RFB
+---------------
+
+Fields
+~~~~~~
+
+* "server_protocol_version.major", "server_protocol_version.minor": The RFB protocol version offered by the server.
+* "client_protocol_version.major", "client_protocol_version.minor": The RFB protocol version agreed by the client.
+* "authentication.security_type": Security type agreed upon in the logged transaction, e.g. ``2`` is VNC auth.
+* "authentication.vnc.challenge", "authentication.vnc.response": Only available when security type 2 is used. Contains the challenge and response byte buffers exchanged by the server and client as hex strings.
+* "authentication.security-result": Result of the authentication process (``OK``, ``FAIL`` or ``TOOMANY``).
+* "screen_shared": Boolean value describing whether the client requested screen sharing.
+* "framebuffer": Contains metadata about the initial screen setup process. Only available when the handshake completed this far.
+* "framebuffer.width", "framebuffer.height": Screen size as offered by the server.
+* "framebuffer.name": Desktop name as advertised by the server.
+* "framebuffer.pixel_format": Pixel representation information, such as color depth. See RFC6143 (https://tools.ietf.org/html/rfc6143) for details.
+
+
+Examples
+~~~~~~~~
+
+Example of RFB logging, with full VNC style authentication parameters:
+
+::
+
+  "rfb": {
+    "server_protocol_version": {
+      "major": "003",
+      "minor": "007"
+    },
+    "client_protocol_version": {
+      "major": "003",
+      "minor": "007"
+    },
+    "authentication": {
+      "security_type": 2,
+      "vnc": {
+        "challenge": "0805b790b58e967f2b350a0c99de3881",
+        "response": "aecb26faeaaa62179636a5934bac1078"
+      },
+      "security-result": "OK"
+    },
+    "screen_shared": false,
+    "framebuffer": {
+      "width": 1280,
+      "height": 800,
+      "name": "foobar@localhost.localdomain",
+      "pixel_format": {
+        "bits_per_pixel": 32,
+        "depth": 24,
+        "big_endian": false,
+        "true_color": true,
+        "red_max": 255,
+        "green_max": 255,
+        "blue_max": 255,
+        "red_shift": 16,
+        "green_shift": 8,
+        "blue_shift": 0
+      }
+    }

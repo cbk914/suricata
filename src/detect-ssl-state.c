@@ -52,12 +52,10 @@
 #include "app-layer-ssl.h"
 
 #define PARSE_REGEX1 "^(!?)([_a-zA-Z0-9]+)(.*)$"
-static pcre *parse_regex1;
-static pcre_extra *parse_regex1_study;
+static DetectParseRegex parse_regex1;
 
 #define PARSE_REGEX2 "^(?:\\s*[|,]\\s*(!?)([_a-zA-Z0-9]+))(.*)$"
-static pcre *parse_regex2;
-static pcre_extra *parse_regex2_study;
+static DetectParseRegex parse_regex2;
 
 static int DetectSslStateMatch(DetectEngineThreadCtx *,
         Flow *, uint8_t, void *, void *,
@@ -66,7 +64,7 @@ static int DetectSslStateSetup(DetectEngineCtx *, Signature *, const char *);
 #ifdef UNITTESTS
 static void DetectSslStateRegisterTests(void);
 #endif
-static void DetectSslStateFree(void *);
+static void DetectSslStateFree(DetectEngineCtx *, void *);
 
 static int InspectTlsGeneric(ThreadVars *tv,
         DetectEngineCtx *de_ctx, DetectEngineThreadCtx *det_ctx,
@@ -83,15 +81,15 @@ void DetectSslStateRegister(void)
 {
     sigmatch_table[DETECT_AL_SSL_STATE].name = "ssl_state";
     sigmatch_table[DETECT_AL_SSL_STATE].desc = "match the state of the SSL connection";
-    sigmatch_table[DETECT_AL_SSL_STATE].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#ssl-state";
+    sigmatch_table[DETECT_AL_SSL_STATE].url = "/rules/tls-keywords.html#ssl-state";
     sigmatch_table[DETECT_AL_SSL_STATE].AppLayerTxMatch = DetectSslStateMatch;
     sigmatch_table[DETECT_AL_SSL_STATE].Setup = DetectSslStateSetup;
     sigmatch_table[DETECT_AL_SSL_STATE].Free  = DetectSslStateFree;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_SSL_STATE].RegisterTests = DetectSslStateRegisterTests;
 #endif
-    DetectSetupParseRegexes(PARSE_REGEX1, &parse_regex1, &parse_regex1_study);
-    DetectSetupParseRegexes(PARSE_REGEX2, &parse_regex2, &parse_regex2_study);
+    DetectSetupParseRegexes(PARSE_REGEX1, &parse_regex1);
+    DetectSetupParseRegexes(PARSE_REGEX2, &parse_regex2);
 
     g_tls_generic_list_id = DetectBufferTypeRegister("tls_generic");
 
@@ -161,7 +159,6 @@ static int DetectSslStateMatch(DetectEngineThreadCtx *det_ctx,
  */
 static DetectSslStateData *DetectSslStateParse(const char *arg)
 {
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov1[MAX_SUBSTRINGS];
     int ov2[MAX_SUBSTRINGS];
@@ -171,8 +168,7 @@ static DetectSslStateData *DetectSslStateParse(const char *arg)
     uint32_t flags = 0, mask = 0;
     DetectSslStateData *ssd = NULL;
 
-    ret = pcre_exec(parse_regex1, parse_regex1_study, arg, strlen(arg), 0, 0,
-                    ov1, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex1, arg, 0, 0, ov1, MAX_SUBSTRINGS);
     if (ret < 1) {
         SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid arg \"%s\" supplied to "
                    "ssl_state keyword.", arg);
@@ -224,8 +220,7 @@ static DetectSslStateData *DetectSslStateParse(const char *arg)
         goto error;
     }
     while (res > 0) {
-        ret = pcre_exec(parse_regex2, parse_regex2_study, str1, strlen(str1), 0, 0,
-                        ov2, MAX_SUBSTRINGS);
+        ret = DetectParsePcreExec(&parse_regex2, str1,  0, 0, ov2, MAX_SUBSTRINGS);
         if (ret < 1) {
             SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid arg \"%s\" supplied to "
                        "ssl_state keyword.", arg);
@@ -326,7 +321,7 @@ static int DetectSslStateSetup(DetectEngineCtx *de_ctx, Signature *s, const char
 
 error:
     if (ssd != NULL)
-        DetectSslStateFree(ssd);
+        DetectSslStateFree(de_ctx, ssd);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -337,7 +332,7 @@ error:
  *
  * \param ptr pointer to the data to be freed.
  */
-static void DetectSslStateFree(void *ptr)
+static void DetectSslStateFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL)
         SCFree(ptr);

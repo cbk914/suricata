@@ -209,6 +209,7 @@ void PcapLogRegister(void)
         PcapLogDataDeinit, NULL);
     PcapLogProfileSetup();
     SC_ATOMIC_INIT(thread_cnt);
+    SC_ATOMIC_SET(thread_cnt, 1); /* first id is 1 */
     return;
 }
 
@@ -734,7 +735,7 @@ static int PcapLogGetTimeOfFile(const char *filename, uint64_t *secs,
                 1, buf, sizeof(buf)) < 0) {
             return 0;
         }
-        if (ByteExtractStringUint64(secs, 10, 0, buf) < 0) {
+        if (StringParseUint64(secs, 10, 0, buf) < 0) {
             return 0;
         }
     }
@@ -744,7 +745,7 @@ static int PcapLogGetTimeOfFile(const char *filename, uint64_t *secs,
                 3, buf, sizeof(buf)) < 0) {
             return 0;
         }
-        if (ByteExtractStringUint32(usecs, 10, 0, buf) < 0) {
+        if (StringParseUint32(usecs, 10, 0, buf) < 0) {
             return 0;
         }
     }
@@ -1169,16 +1170,14 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
 
     PcapLogData *pl = SCMalloc(sizeof(PcapLogData));
     if (unlikely(pl == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate Memory for PcapLogData");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Failed to allocate Memory for PcapLogData");
     }
     memset(pl, 0, sizeof(PcapLogData));
 
     pl->h = SCMalloc(sizeof(*pl->h));
     if (pl->h == NULL) {
-        SCLogError(SC_ERR_MEM_ALLOC,
-            "Failed to allocate Memory for pcap header struct");
-        exit(EXIT_FAILURE);
+            FatalError(SC_ERR_FATAL,
+                       "Failed to allocate Memory for pcap header struct");
     }
 
     /* Set the defaults */
@@ -1245,10 +1244,9 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
                 uint64_t size = pl->size_limit * 1024 * 1024;
                 pl->size_limit = size;
             } else if (pl->size_limit < MIN_LIMIT) {
-                SCLogError(SC_ERR_INVALID_ARGUMENT,
-                    "Fail to initialize pcap-log output, limit less than "
-                    "allowed minimum.");
-                exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Fail to initialize pcap-log output, limit less than "
+                               "allowed minimum.");
             }
         }
     }
@@ -1276,10 +1274,9 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
         }
         if (s_dir == NULL) {
             if (pl->mode == LOGMODE_SGUIL) {
-                SCLogError(SC_ERR_LOGPCAP_SGUIL_BASE_DIR_MISSING,
-                    "log-pcap \"sguil\" mode requires \"sguil-base-dir\" "
-                    "option to be set.");
-                exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "log-pcap \"sguil\" mode requires \"sguil-base-dir\" "
+                               "option to be set.");
             } else {
                 const char *log_dir = NULL;
                 log_dir = ConfigGetLogDirectory();
@@ -1393,9 +1390,8 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
 
             comp->buffer = SCMalloc(comp->buffer_size);
             if (unlikely(comp->buffer == NULL)) {
-                SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate memory for "
-                    "lz4 output buffer.");
-                exit(EXIT_FAILURE);
+                FatalError(SC_ERR_FATAL, "Failed to allocate memory for "
+                           "lz4 output buffer.");
             }
 
             comp->bytes_in_block = 0;
@@ -1430,17 +1426,16 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
         const char *max_number_of_files_s = NULL;
         max_number_of_files_s = ConfNodeLookupChildValue(conf, "max-files");
         if (max_number_of_files_s != NULL) {
-            if (ByteExtractStringUint32(&max_file_limit, 10, 0,
+            if (StringParseUint32(&max_file_limit, 10, 0,
                                         max_number_of_files_s) == -1) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "Failed to initialize "
                            "pcap-log output, invalid number of files limit: %s",
                            max_number_of_files_s);
                 exit(EXIT_FAILURE);
             } else if (max_file_limit < 1) {
-                SCLogError(SC_ERR_INVALID_ARGUMENT,
-                    "Failed to initialize pcap-log output, limit less than "
-                    "allowed minimum.");
-                exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Failed to initialize pcap-log output, limit less than "
+                               "allowed minimum.");
             } else {
                 pl->max_files = max_file_limit;
                 pl->use_ringbuffer = RING_BUFFER_MODE_ENABLED;
@@ -1473,9 +1468,8 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
         } else if (ConfValIsTrue(use_stream_depth)) {
             pl->use_stream_depth = USE_STREAM_DEPTH_ENABLED;
         } else {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,
-                "log-pcap use_stream_depth specified is invalid must be");
-            exit(EXIT_FAILURE);
+                FatalError(SC_ERR_FATAL,
+                           "log-pcap use_stream_depth specified is invalid must be");
         }
     }
 
@@ -1489,9 +1483,8 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
         } else if (ConfValIsTrue(honor_pass_rules)) {
             pl->honor_pass_rules = HONOR_PASS_RULES_ENABLED;
         } else {
-            SCLogError(SC_ERR_INVALID_ARGUMENT,
-                "log-pcap honor-pass-rules specified is invalid");
-            exit(EXIT_FAILURE);
+                FatalError(SC_ERR_FATAL,
+                           "log-pcap honor-pass-rules specified is invalid");
         }
     }
 
@@ -1499,8 +1492,7 @@ static OutputInitResult PcapLogInitCtx(ConfNode *conf)
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate memory for OutputCtx.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Failed to allocate memory for OutputCtx.");
     }
     output_ctx->data = pl;
     output_ctx->DeInit = PcapLogFileDeInitCtx;
@@ -1827,8 +1819,7 @@ void PcapLogProfileSetup(void)
 
             profiling_pcaplog_file_name = SCMalloc(PATH_MAX);
             if (unlikely(profiling_pcaplog_file_name == NULL)) {
-                SCLogError(SC_ERR_MEM_ALLOC, "can't duplicate file name");
-                exit(EXIT_FAILURE);
+                FatalError(SC_ERR_FATAL, "can't duplicate file name");
             }
 
             snprintf(profiling_pcaplog_file_name, PATH_MAX, "%s/%s", log_dir, filename);

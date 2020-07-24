@@ -1,4 +1,4 @@
-/* Copyright (C) 2010-2014 Open Information Security Foundation
+/* Copyright (C) 2010-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -192,9 +192,8 @@ ReceiveErfDagThreadInit(ThreadVars *tv, void *initdata, void **data)
 
     ErfDagThreadVars *ewtn = SCMalloc(sizeof(ErfDagThreadVars));
     if (unlikely(ewtn == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC,
-            "Failed to allocate memory for ERF DAG thread vars.");
-        exit(EXIT_FAILURE);
+            FatalError(SC_ERR_FATAL,
+                       "Failed to allocate memory for ERF DAG thread vars.");
     }
 
     memset(ewtn, 0, sizeof(*ewtn));
@@ -349,6 +348,7 @@ ReceiveErfDagLoop(ThreadVars *tv, void *data, void *slot)
         if (top == NULL) {
             if (errno == EAGAIN) {
                 if (dtv->dagstream & 0x1) {
+                    TmThreadsCaptureHandleTimeout(tv, NULL);
                     usleep(10 * 1000);
                     dtv->btm = dtv->top;
                 }
@@ -431,16 +431,17 @@ ProcessErfDagRecords(ErfDagThreadVars *ewtn, uint8_t *top, uint32_t *pkts_read)
 
         /* Only support ethernet at this time. */
         switch (hdr_type & 0x7f) {
-        case TYPE_PAD:
+        case ERF_TYPE_PAD:
+        case ERF_TYPE_META:
             /* Skip. */
             continue;
-        case TYPE_DSM_COLOR_ETH:
-        case TYPE_COLOR_ETH:
-        case TYPE_COLOR_HASH_ETH:
+        case ERF_TYPE_DSM_COLOR_ETH:
+        case ERF_TYPE_COLOR_ETH:
+        case ERF_TYPE_COLOR_HASH_ETH:
             /* In these types the color value overwrites the lctr
              * (drop count). */
             break;
-        case TYPE_ETH:
+        case ERF_TYPE_ETH:
             if (dr->lctr) {
                 StatsAddUI64(ewtn->tv, ewtn->drops, SCNtohs(dr->lctr));
             }

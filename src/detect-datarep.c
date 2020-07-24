@@ -1,4 +1,4 @@
-/* Copyright (C) 2018-2019 Open Information Security Foundation
+/* Copyright (C) 2018-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -40,23 +40,22 @@
 #include "util-print.h"
 
 #define PARSE_REGEX         "([a-z]+)(?:,\\s*([\\-_A-z0-9\\s\\.]+)){1,4}"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 int DetectDatarepMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectDatarepSetup (DetectEngineCtx *, Signature *, const char *);
-void DetectDatarepFree (void *);
+void DetectDatarepFree (DetectEngineCtx *, void *);
 
 void DetectDatarepRegister (void)
 {
     sigmatch_table[DETECT_DATAREP].name = "datarep";
     sigmatch_table[DETECT_DATAREP].desc = "operate on datasets (experimental)";
-    sigmatch_table[DETECT_DATAREP].url = DOC_URL DOC_VERSION "/rules/dataset-keywords.html#datarep";
+    sigmatch_table[DETECT_DATAREP].url = "/rules/dataset-keywords.html#datarep";
     sigmatch_table[DETECT_DATAREP].Setup = DetectDatarepSetup;
     sigmatch_table[DETECT_DATAREP].Free  = DetectDatarepFree;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /*
@@ -143,7 +142,7 @@ static int DetectDatarepParse(const char *str,
                 return -1;
             }
 
-            if (ByteExtractStringUint16(rep_value, 10, 0, key) != (int)strlen(key))
+            if (StringParseUint16(rep_value, 10, 0, key) < 0)
                 return -1;
 
             value_set = true;
@@ -354,7 +353,7 @@ error:
     return -1;
 }
 
-void DetectDatarepFree (void *ptr)
+void DetectDatarepFree (DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectDatarepData *fd = (DetectDatarepData *)ptr;
 

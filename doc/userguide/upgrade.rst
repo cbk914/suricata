@@ -21,7 +21,7 @@ this means passing the same ``--prefix``, ``--sysconfdir``,
 Configuration Updates
 ~~~~~~~~~~~~~~~~~~~~~
 
-New versions of Suricata will occationally include updated config files:
+New versions of Suricata will occasionally include updated config files:
 ``classification.config`` and ``reference.config``. Since the Suricata
 installation will not overwrite these if they exist, they should be manually
 updated. If there are no local modifications they can simply be overwritten
@@ -30,6 +30,14 @@ by the ones Suricata supplies.
 Major updates include new features, new default settings and often also
 remove features.
 
+Upgrading 5.0 to 6.0
+--------------------
+- SIP now enabled by default
+- EDP now enabled by default
+
+Removals
+~~~~~~~~
+- File-store v1 has been removed. If using file extraction, the file-store configuration will need to be updated to version 2. See :ref:`filestore-update-v1-to-v2`.
 
 Upgrading 4.1 to 5.0
 --------------------

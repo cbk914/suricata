@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -47,14 +47,13 @@
  *  dsize:[<>]<0-65535>[<><0-65535>];
  */
 #define PARSE_REGEX "^\\s*(<|>)?\\s*([0-9]{1,5})\\s*(?:(<>)\\s*([0-9]{1,5}))?\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectDsizeMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectDsizeSetup (DetectEngineCtx *, Signature *s, const char *str);
 static void DsizeRegisterTests(void);
-static void DetectDsizeFree(void *);
+static void DetectDsizeFree(DetectEngineCtx *, void *);
 
 static int PrefilterSetupDsize(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
 static bool PrefilterDsizeIsPrefilterable(const Signature *s);
@@ -66,7 +65,7 @@ void DetectDsizeRegister (void)
 {
     sigmatch_table[DETECT_DSIZE].name = "dsize";
     sigmatch_table[DETECT_DSIZE].desc = "match on the size of the packet payload";
-    sigmatch_table[DETECT_DSIZE].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#dsize";
+    sigmatch_table[DETECT_DSIZE].url = "/rules/payload-keywords.html#dsize";
     sigmatch_table[DETECT_DSIZE].Match = DetectDsizeMatch;
     sigmatch_table[DETECT_DSIZE].Setup = DetectDsizeSetup;
     sigmatch_table[DETECT_DSIZE].Free  = DetectDsizeFree;
@@ -75,7 +74,7 @@ void DetectDsizeRegister (void)
     sigmatch_table[DETECT_DSIZE].SupportsPrefilter = PrefilterDsizeIsPrefilterable;
     sigmatch_table[DETECT_DSIZE].SetupPrefilter = PrefilterSetupDsize;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static inline int
@@ -138,7 +137,6 @@ static int DetectDsizeMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
 static DetectDsizeData *DetectDsizeParse (const char *rawstr)
 {
     DetectDsizeData *dd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char mode[2] = "";
@@ -146,7 +144,7 @@ static DetectDsizeData *DetectDsizeParse (const char *rawstr)
     char value2[6] = "";
     char range[3] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH,"Parse error %s", rawstr);
         goto error;
@@ -209,7 +207,7 @@ static DetectDsizeData *DetectDsizeParse (const char *rawstr)
     }
 
     /** set the first dsize value */
-    if (ByteExtractStringUint16(&dd->dsize,10,strlen(value1),value1) <= 0) {
+    if (StringParseUint16(&dd->dsize,10,strlen(value1),value1) <= 0) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "Invalid size value1:\"%s\"", value1);
         goto error;
     }
@@ -221,7 +219,7 @@ static DetectDsizeData *DetectDsizeParse (const char *rawstr)
             goto error;
         }
 
-        if (ByteExtractStringUint16(&dd->dsize2,10,strlen(value2),value2) <= 0) {
+        if (StringParseUint16(&dd->dsize2,10,strlen(value2),value2) <= 0) {
             SCLogError(SC_ERR_INVALID_ARGUMENT,"Invalid size value2:\"%s\"",value2);
             goto error;
         }
@@ -307,7 +305,7 @@ error:
  *
  * \param de pointer to DetectDsizeData
  */
-void DetectDsizeFree(void *de_ptr)
+void DetectDsizeFree(DetectEngineCtx *de_ctx, void *de_ptr)
 {
     DetectDsizeData *dd = (DetectDsizeData *)de_ptr;
     if(dd) SCFree(dd);
@@ -488,7 +486,7 @@ static int DsizeTestParse01 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("1");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 1;
     }
 
@@ -506,7 +504,7 @@ static int DsizeTestParse02 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse(">10");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 1;
     }
 
@@ -524,7 +522,7 @@ static int DsizeTestParse03 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("<100");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 1;
     }
 
@@ -542,7 +540,7 @@ static int DsizeTestParse04 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("1<>2");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 1;
     }
 
@@ -564,7 +562,7 @@ static int DsizeTestParse05 (void)
         if (dd->dsize == 1)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -585,7 +583,7 @@ static int DsizeTestParse06 (void)
         if (dd->dsize == 10 && dd->mode == DETECTDSIZE_GT)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -606,7 +604,7 @@ static int DsizeTestParse07 (void)
         if (dd->dsize == 100 && dd->mode == DETECTDSIZE_LT)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -627,7 +625,7 @@ static int DsizeTestParse08 (void)
         if (dd->dsize == 1 && dd->dsize2 == 2 && dd->mode == DETECTDSIZE_RA)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -644,7 +642,7 @@ static int DsizeTestParse09 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("A");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -662,7 +660,7 @@ static int DsizeTestParse10 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse(">10<>10");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -680,7 +678,7 @@ static int DsizeTestParse11 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("<>10");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -698,7 +696,7 @@ static int DsizeTestParse12 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("1<>");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -720,7 +718,7 @@ static int DsizeTestParse13 (void)
         if (dd->dsize2 == 0)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -737,7 +735,7 @@ static int DsizeTestParse14 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -755,7 +753,7 @@ static int DsizeTestParse15 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse(" ");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -773,7 +771,7 @@ static int DsizeTestParse16 (void)
     DetectDsizeData *dd = NULL;
     dd = DetectDsizeParse("2<>1");
     if (dd) {
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
         return 0;
     }
 
@@ -795,7 +793,7 @@ static int DsizeTestParse17 (void)
         if (dd->dsize == 1 && dd->dsize2 == 2 && dd->mode == DETECTDSIZE_RA)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -816,7 +814,7 @@ static int DsizeTestParse18 (void)
         if (dd->dsize == 2 && dd->mode == DETECTDSIZE_GT)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -837,7 +835,7 @@ static int DsizeTestParse19 (void)
         if (dd->dsize == 12 && dd->mode == DETECTDSIZE_LT)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;
@@ -858,7 +856,7 @@ static int DsizeTestParse20 (void)
         if (dd->dsize == 12 && dd->mode == DETECTDSIZE_EQ)
             result = 1;
 
-        DetectDsizeFree(dd);
+        DetectDsizeFree(NULL, dd);
     }
 
     return result;

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -65,20 +65,19 @@ TODO:
     "(?:\\s*,\\s*([^\\s,]+))?(?:\\s*)?" /* Name. */                     \
     "(?:\\s*,\\s*([^,\\s]+))?(?:\\s*)?" /* Direction. */                \
     "(.+)?"                             /* Any remainding data. */
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectHostbitMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectHostbitSetup (DetectEngineCtx *, Signature *, const char *);
-void DetectHostbitFree (void *);
+void DetectHostbitFree (DetectEngineCtx *, void *);
 void HostBitsRegisterTests(void);
 
 void DetectHostbitsRegister (void)
 {
     sigmatch_table[DETECT_HOSTBITS].name = "hostbits";
     sigmatch_table[DETECT_HOSTBITS].desc = "operate on host flag";
-//    sigmatch_table[DETECT_HOSTBITS].url = DOC_URL DOC_VERSION "/rules/flow-keywords.html#flowbits";
+//    sigmatch_table[DETECT_HOSTBITS].url = "/rules/flow-keywords.html#flowbits";
     sigmatch_table[DETECT_HOSTBITS].Match = DetectHostbitMatch;
     sigmatch_table[DETECT_HOSTBITS].Setup = DetectHostbitSetup;
     sigmatch_table[DETECT_HOSTBITS].Free  = DetectHostbitFree;
@@ -86,7 +85,7 @@ void DetectHostbitsRegister (void)
     /* this is compatible to ip-only signatures */
     sigmatch_table[DETECT_HOSTBITS].flags |= SIGMATCH_IPONLY_COMPAT;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static int DetectHostbitMatchToggle (Packet *p, const DetectXbitsData *fd)
@@ -283,8 +282,7 @@ static int DetectHostbitParse(const char *str, char *cmd, int cmd_len,
     int count, rc;
     int ov[max_substrings];
 
-    count = pcre_exec(parse_regex, parse_regex_study, str, strlen(str), 0, 0,
-        ov, max_substrings);
+    count = DetectParsePcreExec(&parse_regex, str, 0, 0, ov, max_substrings);
     if (count != 2 && count != 3 && count != 4) {
         SCLogError(SC_ERR_PCRE_MATCH,
             "\"%s\" is not a valid setting for hostbits.", str);
@@ -435,7 +433,7 @@ error:
     return -1;
 }
 
-void DetectHostbitFree (void *ptr)
+void DetectHostbitFree (DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectXbitsData *fd = (DetectXbitsData *)ptr;
 

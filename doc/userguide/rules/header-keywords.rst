@@ -111,6 +111,25 @@ The named variant of that example would be::
 
     ip_proto:PIM
 
+ipv4.hdr
+^^^^^^^^
+
+Sticky buffer to match on the whole IPv4 header.
+
+Example rule:
+
+.. container:: example-rule
+
+    alert ip any any -> any any (:example-rule-emphasis:`ipv4.hdr; content:"|3A|"; offset:9; depth:1;` sid:1234; rev:5;)
+
+This example looks if byte 9 of IPv4 header has value 3A.
+That means that the IPv4 protocol is ICMPv6.
+
+ipv6.hdr
+^^^^^^^^
+
+Sticky buffer to match on the whole IPv6 header.
+
 id
 ^^
 
@@ -240,6 +259,13 @@ field. The tos keyword can be have a value from 0 - 255. This field of the
 IP header has been updated by `rfc2474 <https://tools.ietf.org/html/rfc2474>`_
 to include functionality for
 `Differentiated services <https://en.wikipedia.org/wiki/Differentiated_services>`_.
+Note that the value of the field has been defined with the right-most 2 bits having
+the value 0. When specifying a value for tos, ensure that the value follows this.
+
+E.g, instead of specifying the decimal value 34 (hex 22), right shift twice and use
+decimal 136 (hex 88).
+
+You can specify hexadecimal values as with a leading `x`, e.g, `x88`.
 
 Format of tos::
 
@@ -616,3 +642,26 @@ Example of icmp_seq in a rule:
 .. container:: example-rule
 
     alert icmp $EXTERNAL_NET any -> $HOME_NET any (msg:"GPL SCAN Broadscan Smurf Scanner"; dsize:4; icmp_id:0; :example-rule-emphasis:`icmp_seq:0;` itype:8; classtype:attempted-recon; sid:2100478; rev:4;)
+
+icmpv6.hdr
+^^^^^^^^^^
+
+Sticky buffer to match on the whole ICMPv6 header.
+
+icmpv6.mtu
+^^^^^^^^^^
+
+Match on the ICMPv6 MTU optional value. Will not match if the MTU is not
+present.
+
+The format of the keyword::
+
+  icmpv6.mtu:<min>-<max>;
+  icmpv6.mtu:[<|>]<number>;
+  icmpv6.mtu:<value>;
+
+Example rule:
+
+.. container:: example-rule
+
+    alert ip $EXTERNAL_NET any -> $HOME_NET any (:example-rule-emphasis:`icmpv6.mtu:<1280;` sid:1234; rev:5;)

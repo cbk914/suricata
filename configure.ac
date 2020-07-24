@@ -3,10 +3,9 @@
     AC_CONFIG_HEADERS([config.h])
     AC_CONFIG_SRCDIR([src/suricata.c])
     AC_CONFIG_MACRO_DIR(m4)
-    AM_INIT_AUTOMAKE([tar-ustar])
+    AM_INIT_AUTOMAKE([tar-ustar subdir-objects])
 
     AC_LANG([C])
-    AC_PROG_CC_C99
     LT_INIT
     PKG_PROG_PKG_CONFIG
 
@@ -41,16 +40,6 @@
     case "$compiler" in
         clang)
             CLANG_CFLAGS="-Wextra -Werror-implicit-function-declaration -Wno-error=unused-command-line-argument"
-            AC_MSG_CHECKING([clang __sync_bool_compare_and_swap support])
-            AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdio.h>]],
-                [[ unsigned int i = 0; (void)__sync_bool_compare_and_swap(&i, 1, 1);]])],
-                [
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4], [1], [Fake GCC atomic support])
-                    AC_DEFINE([__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8], [1], [Fake GCC atomic support])
-                    AC_MSG_RESULT([yes])],
-                [AC_MSG_RESULT([no])])
             AC_SUBST(CLANG_CFLAGS)
             ;;
         gcc)
@@ -188,13 +177,14 @@
     AC_CHECK_HEADERS([sys/time.h time.h unistd.h sys/param.h])
     AC_CHECK_HEADERS([sys/ioctl.h linux/if_ether.h linux/if_packet.h linux/filter.h])
     AC_CHECK_HEADERS([linux/ethtool.h linux/sockios.h])
-    AC_CHECK_HEADERS([glob.h locale.h])
+    AC_CHECK_HEADERS([glob.h locale.h grp.h pwd.h])
     AC_CHECK_HEADERS([dirent.h fnmatch.h])
     AC_CHECK_HEADERS([sys/resource.h sys/types.h sys/un.h])
     AC_CHECK_HEADERS([sys/random.h])
     AC_CHECK_HEADERS([utime.h])
     AC_CHECK_HEADERS([libgen.h])
     AC_CHECK_HEADERS([mach/mach.h])
+    AC_CHECK_HEADERS([stdatomic.h])
 
     AC_CHECK_HEADERS([sys/socket.h net/if.h sys/mman.h linux/if_arp.h], [], [],
     [[#ifdef HAVE_SYS_SOCKET_H
@@ -232,6 +222,10 @@
     AC_TYPE_UINT16_T
     AC_TYPE_UINT32_T
     AC_TYPE_UINT64_T
+    AC_TYPE_UINT
+    AC_TYPE_USHORT
+    AC_TYPE_ULONG
+    AC_TYPE_UCHAR
     AC_STRUCT_TIMEZONE
     AC_CHECK_TYPES([ptrdiff_t])
     AC_HEADER_STDBOOL
@@ -329,42 +323,35 @@
     esac
     AC_MSG_RESULT(ok)
 
-    # enable modifications for AFL fuzzing
-    AC_ARG_ENABLE(afl,
-           AS_HELP_STRING([--enable-afl], Enable AFL fuzzing logic[])], [enable_afl="$enableval"],[enable_afl=no])
+    # check if our target supports c11
+    AC_MSG_CHECKING(for c11 support)
+    OCFLAGS=$CFLAGS
+    CFLAGS="-std=c11"
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
+                [[ static _Thread_local int i; i = 1; i++; ]])],
+            AC_MSG_RESULT([yes])
+            [AC_DEFINE([TLS_C11], [1], [C11 Thread local storage])
+             CFLAGS="$OCFLAGS -std=c11"],
+            [AC_MSG_RESULT([no])
+             CFLAGS="$OCFLAGS"
+             have_c11=no
+             have_c11_tls=no])
+    if [ test "x$have_c11" = "xno" ]; then
+        CFLAGS="$CFLAGS -std=gnu99"
+    fi
 
-    AS_IF([test "x$enable_afl" = "xyes"], [
-        AC_DEFINE([AFLFUZZ_NO_RANDOM], [1], [Disable all use of random functions])
-        AC_DEFINE([AFLFUZZ_DISABLE_MGTTHREADS], [1], [Disable all management threads])
-        AC_DEFINE([AFLFUZZ_PCAP_RUNMODE], [1], [Enable special AFL 'single' runmode])
-        AC_DEFINE([AFLFUZZ_CONF_TEST], [1], [Enable special --afl-parse-rules commandline option])
-        AC_DEFINE([AFLFUZZ_APPLAYER], [1], [Enable --afl-$proto-request commandline option])
-        AC_DEFINE([AFLFUZZ_MIME], [1], [Enable --afl-mime commandline option])
-        AC_DEFINE([AFLFUZZ_DECODER], [1], [Enable --afl-decoder-$proto commandline option])
-        AC_DEFINE([AFLFUZZ_DER], [1], [Enable --afl-der commandline option])
-        AC_DEFINE([AFLFUZZ_RULES], [1], [Enable --afl-rules commandline option])
-
-        # test for AFL PERSISTANT_MODE support
-        CFLAGS_ORIG=$CFLAGS
-        CFLAGS="-Werror"
-        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[while (__AFL_LOOP(1000))]])],
-                [AC_DEFINE([AFLFUZZ_PERSISTANT_MODE], [1], [Enable AFL PERSISTANT_MODE])],
-                [])
-        CFLAGS=$CFLAGS_ORIG
-    ])
-
-  # disable TLS on user request
-    AC_ARG_ENABLE(threading-tls,
-           AS_HELP_STRING([--disable-threading-tls], [Disable TLS (thread local storage)]), [enable_tls="$enableval"],[enable_tls=yes])
-    AS_IF([test "x$enable_tls" = "xyes"], [
-        # check if our target supports thread local storage
-        AC_MSG_CHECKING(for thread local storage __thread support)
-        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
-            [[ static __thread int i; i = 1; i++; ]])],
-            [AC_DEFINE([TLS], [1], [Thread local storage])
-             AC_MSG_RESULT([yes])],
-            [AC_MSG_RESULT([no])])
-    ])
+    # check if our target supports thread local storage
+    AC_MSG_CHECKING(for thread local storage gnu __thread support)
+    AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[#include <stdlib.h>]],
+                [[ static __thread int i; i = 1; i++; ]])],
+            [AC_DEFINE([TLS_GNU], [1], [Thread local storage])
+            AC_MSG_RESULT([yes])],
+            [AC_MSG_RESULT([no])
+             have_gnu_tls=no])
+    if [ test "x$have_c11_tls" = "xno" ] && [ test "x$have_gnu_tls" = "xno" ]; then
+        AC_MSG_ERROR("no thread local support available.")
+        exit 1
+    fi
 
     #Enable support for gcc compile time security options. There is no great way to do detection of valid cflags that I have found
     #AX_CFLAGS_GCC_OPTION don't seem to do a better job than the code below and are a pain because of extra m4 files etc.
@@ -459,6 +446,47 @@
 
 # options
 
+
+    AC_ARG_ENABLE(fuzztargets,
+        AS_HELP_STRING([--enable-fuzztargets], [Enable fuzz targets]),[enable_fuzztargets=$enableval],[enable_fuzztargets=no])
+    AM_CONDITIONAL([BUILD_FUZZTARGETS], [test "x$enable_fuzztargets" = "xyes"])
+    AC_PROG_CXX
+    AS_IF([test "x$enable_fuzztargets" = "xyes"], [
+        AC_DEFINE([FUZZ], [1], [Fuzz targets are enabled])
+        AC_DEFINE([AFLFUZZ_NO_RANDOM], [1], [Disable all use of random functions])
+        CFLAGS_ORIG=$CFLAGS
+        CFLAGS="-Werror"
+        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[]], [[while (__AFL_LOOP(1000))]])],
+                [AC_DEFINE([AFLFUZZ_PERSISTANT_MODE], [1], [Enable AFL PERSISTANT_MODE])],
+                [])
+        CFLAGS=$CFLAGS_ORIG
+        AC_LANG_PUSH(C++)
+        tmp_saved_flags=$[]_AC_LANG_PREFIX[]FLAGS
+        AS_IF([test "x$LIB_FUZZING_ENGINE" = "x"], [
+            LIB_FUZZING_ENGINE=-fsanitize=fuzzer
+            AC_SUBST(LIB_FUZZING_ENGINE)
+        ])
+        _AC_LANG_PREFIX[]FLAGS="$[]_AC_LANG_PREFIX[]FLAGS $LIB_FUZZING_ENGINE"
+        AC_MSG_CHECKING([whether $CXX accepts $LIB_FUZZING_ENGINE])
+        AC_LINK_IFELSE([AC_LANG_SOURCE([[
+#include <sys/types.h>
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char *Data, size_t Size);
+extern "C" int LLVMFuzzerTestOneInput(const unsigned char *Data, size_t Size) {
+(void)Data;
+(void)Size;
+return 0;
+}
+            ]])],
+            [ AC_MSG_RESULT(yes)
+              has_sanitizefuzzer=yes],
+            [ AC_MSG_RESULT(no) ]
+        )
+        _AC_LANG_PREFIX[]FLAGS=$tmp_saved_flags
+        AC_LANG_POP()
+    ])
+
+    AM_CONDITIONAL([HAS_FUZZLDFLAGS], [test "x$has_sanitizefuzzer" = "xyes"])
+
   # enable the running of unit tests
     AC_ARG_ENABLE(unittests,
            AS_HELP_STRING([--enable-unittests], [Enable compilation of the unit tests]),[enable_unittests=$enableval],[enable_unittests=no])
@@ -508,6 +536,7 @@
             AC_DEFINE([DEBUG_VALIDATION],[1],[Enable (debug) validation code output])
         fi
     ])
+    AM_CONDITIONAL([DEBUG_VALIDATION], [test "x$enable_debug_validation" = "xyes"])
 
   # profiling support
     AC_ARG_ENABLE(profiling,
@@ -710,13 +739,10 @@
        AC_MSG_CHECKING(for PCRE JIT support usability)
        AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[ #include <pcre.h> ]],
            [[
-           const char* regexstr = "(a|b|c|d)";
-           pcre *re;
            const char *error;
-           pcre_extra *extra;
            int err_offset;
-           re = pcre_compile(regexstr,0, &error, &err_offset,NULL);
-           extra = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
+           pcre *re = pcre_compile("(a|b|c|d)",0, &error, &err_offset,NULL);
+           pcre_extra *extra = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
            if (extra == NULL)
                exit(EXIT_FAILURE);
            int jit = 0;
@@ -735,6 +761,39 @@
            exit 1
        else
            AC_MSG_RESULT(yes)
+       fi
+    else
+        AC_MSG_RESULT(no)
+    fi
+
+    if test "x$pcre_jit_works" = "xyes"; then
+
+       AC_MSG_CHECKING(for PCRE JIT EXEC support usability)
+       AC_RUN_IFELSE([AC_LANG_PROGRAM([[
+                          #include <pcre.h>
+                          #include <string.h>
+                          ]],
+           [[
+           const char *error;
+           int err_offset;
+           pcre *re = pcre_compile("(a|b|c|d)", 0, &error, &err_offset,NULL);
+           pcre_extra *study = pcre_study(re, PCRE_STUDY_JIT_COMPILE, &error);
+           if (study == NULL)
+               exit(EXIT_FAILURE);
+           pcre_jit_stack *stack = pcre_jit_stack_alloc(32*1024,40*1024);
+           if (stack == 0)
+               exit(EXIT_FAILURE);
+           int ret = pcre_jit_exec(re, study, "apple", 5, 0, 0, NULL, 0, stack);
+           if (ret != 0)
+               exit(EXIT_FAILURE);
+           exit(EXIT_SUCCESS);
+           ]])],[ pcre_jit_exec_works=yes ],[:]
+       )
+       if test "x$pcre_jit_exec_works" != "xyes"; then
+           AC_MSG_RESULT(no)
+       else
+           AC_MSG_RESULT(yes)
+           AC_DEFINE([PCRE_HAVE_JIT_EXEC], [1], [Pcre with JIT compiler support enabled supporting pcre_jit_exec])
        fi
     else
         AC_MSG_RESULT(no)
@@ -1275,12 +1334,24 @@
         CPPFLAGS="${CPPFLAGS} -I${with_libpcap_includes}"
     fi
 
-    AC_CHECK_HEADER(pcap.h,,[AC_MSG_ERROR(pcap.h not found ...)])
+    AC_CHECK_HEADERS([pcap.h],[],[AC_MSG_ERROR(pcap.h not found ...)],
+            [[
+                #ifdef HAVE_WINSOCK2_H
+                #include <winsock2.h>
+                #endif
+                #define _DEFAULT_SOURCE 1
+            ]])
 
     if test "$with_libpcap_libraries" != "no"; then
         LDFLAGS="${LDFLAGS}  -L${with_libpcap_libraries}"
     fi
-    AC_CHECK_HEADERS([pcap.h pcap/pcap.h pcap/bpf.h])
+    AC_CHECK_HEADERS([pcap.h pcap/pcap.h pcap/bpf.h],[],[],
+            [[
+                #ifdef HAVE_WINSOCK2_H
+                #include <winsock2.h>
+                #endif
+                #define _DEFAULT_SOURCE 1
+            ]])
 
     LIBPCAP=""
     PKG_CHECK_MODULES([PCAP],libpcap,[CPPFLAGS="${CPPFLAGS} ${PCAP_CFLAGS}" LIBS="${LIBS} ${PCAP_LIBS}"],[:])
@@ -1829,6 +1900,7 @@
             echo "   Fedora: dnf install nspr-devel"
             echo "   CentOS/RHEL: yum install nspr-devel"
             echo
+            enable_nspr="no"
         fi
     fi
 
@@ -1881,6 +1953,7 @@
             echo "   Fedora: dnf install nss-devel"
             echo "   CentOS/RHEL: yum install nss-devel"
             echo
+            enable_nss="no"
         fi
     fi
 
@@ -2394,7 +2467,7 @@ fi
     cargo_version_output=$($CARGO --version)
     cargo_version=$(echo "$cargo_version_output" | sed 's/^.*[[^0-9]]\([[0-9]]*\.[[0-9]]*\.[[0-9]]*\).*$/\1/')
 
-    MIN_RUSTC_VERSION="1.33.0"
+    MIN_RUSTC_VERSION="1.34.2"
     AC_MSG_CHECKING(for Rust version $MIN_RUSTC_VERSION or newer)
     AS_VERSION_COMPARE([$rustc_version], [$MIN_RUSTC_VERSION],
         [
@@ -2415,7 +2488,11 @@ fi
     if test "x$cross_compiling" = "xyes"; then
       RUST_SURICATA_LIB_XC_DIR="${host_alias}/"
     else
-      RUST_SURICATA_LIB_XC_DIR=
+      if test "x$CARGO_BUILD_TARGET" = "x"; then
+        RUST_SURICATA_LIB_XC_DIR=
+      else
+        RUST_SURICATA_LIB_XC_DIR="${CARGO_BUILD_TARGET}/"
+      fi
     fi
 
     if test "x$enable_debug" = "xyes"; then
@@ -2639,7 +2716,7 @@ AC_SUBST(PACKAGE_VERSION)
 
 AC_CONFIG_FILES(Makefile src/Makefile rust/Makefile rust/Cargo.toml rust/.cargo/config)
 AC_CONFIG_FILES(qa/Makefile qa/coccinelle/Makefile)
-AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile)
+AC_CONFIG_FILES(rules/Makefile doc/Makefile doc/userguide/Makefile doc/devguide/Makefile)
 AC_CONFIG_FILES(contrib/Makefile contrib/file_processor/Makefile contrib/file_processor/Action/Makefile contrib/file_processor/Processor/Makefile)
 AC_CONFIG_FILES(suricata.yaml etc/Makefile etc/suricata.logrotate etc/suricata.service)
 AC_CONFIG_FILES(python/Makefile python/suricata/config/defaults.py)

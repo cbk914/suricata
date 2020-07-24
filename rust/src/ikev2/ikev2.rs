@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2018 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -21,8 +21,7 @@ use crate::ikev2::ipsec_parser::*;
 use crate::ikev2::state::IKEV2ConnectionState;
 use crate::core;
 use crate::core::{AppProto,Flow,ALPROTO_UNKNOWN,ALPROTO_FAILED,STREAM_TOSERVER,STREAM_TOCLIENT};
-use crate::applayer;
-use crate::parser::*;
+use crate::applayer::{self, *};
 use std;
 use std::ffi::{CStr,CString};
 
@@ -116,7 +115,7 @@ pub struct IKEV2Transaction {
     /// The events associated with this transaction
     events: *mut core::AppLayerDecoderEvents,
 
-    logged: applayer::LoggerFlags,
+    tx_data: applayer::AppLayerTxData,
 }
 
 
@@ -426,7 +425,7 @@ impl IKEV2Transaction {
             id: id,
             de_state: None,
             events: std::ptr::null_mut(),
-            logged: applayer::LoggerFlags::new(),
+            tx_data: applayer::AppLayerTxData::new(),
         }
     }
 
@@ -470,10 +469,13 @@ pub extern "C" fn rs_ikev2_parse_request(_flow: *const core::Flow,
                                        input: *const u8,
                                        input_len: u32,
                                        _data: *const std::os::raw::c_void,
-                                       _flags: u8) -> i32 {
+                                       _flags: u8) -> AppLayerResult {
     let buf = build_slice!(input,input_len as usize);
     let state = cast_pointer!(state,IKEV2State);
-    state.parse(buf, STREAM_TOSERVER)
+    if state.parse(buf, STREAM_TOSERVER) < 0 {
+        return AppLayerResult::err();
+    }
+    return AppLayerResult::ok();
 }
 
 #[no_mangle]
@@ -483,7 +485,7 @@ pub extern "C" fn rs_ikev2_parse_response(_flow: *const core::Flow,
                                        input: *const u8,
                                        input_len: u32,
                                        _data: *const std::os::raw::c_void,
-                                       _flags: u8) -> i32 {
+                                       _flags: u8) -> AppLayerResult {
     let buf = build_slice!(input,input_len as usize);
     let state = cast_pointer!(state,IKEV2State);
     let res = state.parse(buf, STREAM_TOCLIENT);
@@ -494,7 +496,10 @@ pub extern "C" fn rs_ikev2_parse_response(_flow: *const core::Flow,
                                        APP_LAYER_PARSER_BYPASS_READY)
         };
     }
-    res
+    if res < 0 {
+        return AppLayerResult::err();
+    }
+    return AppLayerResult::ok();
 }
 
 #[no_mangle]
@@ -540,29 +545,6 @@ pub extern "C" fn rs_ikev2_tx_get_alstate_progress(_tx: *mut std::os::raw::c_voi
 {
     1
 }
-
-
-
-
-
-#[no_mangle]
-pub extern "C" fn rs_ikev2_tx_set_logged(_state: *mut std::os::raw::c_void,
-                                       tx: *mut std::os::raw::c_void,
-                                       logged: u32)
-{
-    let tx = cast_pointer!(tx,IKEV2Transaction);
-    tx.logged.set(logged);
-}
-
-#[no_mangle]
-pub extern "C" fn rs_ikev2_tx_get_logged(_state: *mut std::os::raw::c_void,
-                                       tx: *mut std::os::raw::c_void)
-                                       -> u32
-{
-    let tx = cast_pointer!(tx,IKEV2Transaction);
-    return tx.logged.get();
-}
-
 
 #[no_mangle]
 pub extern "C" fn rs_ikev2_state_set_tx_detect_state(
@@ -695,6 +677,8 @@ pub extern "C" fn rs_ikev2_probing_parser(_flow: *const Flow,
     }
 }
 
+export_tx_data_get!(rs_ikev2_get_tx_data, IKEV2Transaction);
+
 const PARSER_NAME : &'static [u8] = b"ikev2\0";
 
 #[no_mangle]
@@ -717,8 +701,6 @@ pub unsafe extern "C" fn rs_register_ikev2_parser() {
         get_tx             : rs_ikev2_state_get_tx,
         tx_get_comp_st     : rs_ikev2_state_progress_completion_status,
         tx_get_progress    : rs_ikev2_tx_get_alstate_progress,
-        get_tx_logged      : Some(rs_ikev2_tx_get_logged),
-        set_tx_logged      : Some(rs_ikev2_tx_set_logged),
         get_de_state       : rs_ikev2_state_get_tx_detect_state,
         set_de_state       : rs_ikev2_state_set_tx_detect_state,
         get_events         : Some(rs_ikev2_state_get_events),
@@ -726,12 +708,11 @@ pub unsafe extern "C" fn rs_register_ikev2_parser() {
         get_eventinfo_byid : Some(rs_ikev2_state_get_event_info_by_id),
         localstorage_new   : None,
         localstorage_free  : None,
-        get_tx_mpm_id      : None,
-        set_tx_mpm_id      : None,
         get_files          : None,
         get_tx_iterator    : None,
-        get_tx_detect_flags: None,
-        set_tx_detect_flags: None,
+        get_tx_data        : rs_ikev2_get_tx_data,
+        apply_tx_config    : None,
+        flags              : 0,
     };
 
     let ip_proto_str = CString::new("udp").unwrap();

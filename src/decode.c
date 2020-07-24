@@ -295,6 +295,7 @@ Packet *PacketTunnelPktSetup(ThreadVars *tv, DecodeThreadVars *dtv, Packet *pare
     p->ts.tv_usec = parent->ts.tv_usec;
     p->datalink = DLT_RAW;
     p->tenant_id = parent->tenant_id;
+    p->livedev = parent->livedev;
 
     /* set the root ptr to the lowest layer */
     if (parent->root != NULL)
@@ -483,6 +484,7 @@ void DecodeRegisterPerfCounters(DecodeThreadVars *dtv, ThreadVars *tv)
     dtv->counter_ipv4 = StatsRegisterCounter("decoder.ipv4", tv);
     dtv->counter_ipv6 = StatsRegisterCounter("decoder.ipv6", tv);
     dtv->counter_eth = StatsRegisterCounter("decoder.ethernet", tv);
+    dtv->counter_chdlc = StatsRegisterCounter("decoder.chdlc", tv);
     dtv->counter_raw = StatsRegisterCounter("decoder.raw", tv);
     dtv->counter_null = StatsRegisterCounter("decoder.null", tv);
     dtv->counter_sll = StatsRegisterCounter("decoder.sll", tv);
@@ -732,6 +734,7 @@ void DecodeGlobalConfig(void)
 {
     DecodeTeredoConfig();
     DecodeVXLANConfig();
+    DecodeERSPANConfig();
 }
 
 /**

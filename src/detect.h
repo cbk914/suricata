@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2014 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -262,6 +262,7 @@ typedef struct DetectPort_ {
 #define SIG_FLAG_INIT_STATE_MATCH           BIT_U32(6)  /**< signature has matches that require stateful inspection */
 #define SIG_FLAG_INIT_NEED_FLUSH            BIT_U32(7)
 #define SIG_FLAG_INIT_PRIO_EXPLICT          BIT_U32(8)  /**< priority is explicitly set by the priority keyword */
+#define SIG_FLAG_INIT_FILEDATA              BIT_U32(9)  /**< signature has filedata keyword */
 
 /* signature mask flags */
 /** \note: additions should be added to the rule analyzer as well */
@@ -366,8 +367,13 @@ typedef struct InspectionBufferMultipleForList {
     uint32_t init:1;    /**< first time used this run. Used for clean logic */
 } InspectionBufferMultipleForList;
 
+typedef struct TransformData_ {
+    int transform;
+    void *options;
+} TransformData;
+
 typedef struct DetectEngineTransforms {
-    int transforms[DETECT_TRANSFORMS_MAX];
+    TransformData transforms[DETECT_TRANSFORMS_MAX];
     int cnt;
 } DetectEngineTransforms;
 
@@ -498,8 +504,7 @@ typedef struct SignatureInitData_ {
     int list;
     bool list_set;
 
-    int transforms[DETECT_TRANSFORMS_MAX];
-    int transform_cnt;
+    DetectEngineTransforms transforms;
 
     /** score to influence rule grouping. A higher value leads to a higher
      *  likelihood of a rulegroup with this sig ending up as a contained
@@ -865,6 +870,7 @@ typedef struct DetectEngineCtx_ {
     char *rule_file;
     int rule_line;
     bool sigerror_silent;
+    bool sigerror_ok;
     const char *sigerror;
 
     /** list of keywords that need thread local ctxs */
@@ -1011,6 +1017,8 @@ typedef struct DetectEngineThreadCtx_ {
     /* the thread to which this detection engine thread belongs */
     ThreadVars *tv;
 
+    /** Array of non-prefiltered sigs that need to be evaluated. Updated
+     *  per packet based on the rule group and traffic properties. */
     SigIntId *non_pf_id_array;
     uint32_t non_pf_id_cnt; // size is cnt * sizeof(uint32_t)
 
@@ -1108,8 +1116,8 @@ typedef struct DetectEngineThreadCtx_ {
     /** ip only rules ctx */
     DetectEngineIPOnlyThreadCtx io_ctx;
 
-    /* byte jump values */
-    uint64_t *bj_values;
+    /* byte_* values */
+    uint64_t *byte_values;
 
     /* string to replace */
     DetectReplaceList *replist;
@@ -1180,7 +1188,8 @@ typedef struct SigTableElmt_ {
         uint8_t flags, File *, const Signature *, const SigMatchCtx *);
 
     /** InspectionBuffer transformation callback */
-    void (*Transform)(InspectionBuffer *);
+    void (*Transform)(InspectionBuffer *, void *context);
+    bool (*TransformValidate)(const uint8_t *content, uint16_t content_len, void *context);
 
     /** keyword setup function pointer */
     int (*Setup)(DetectEngineCtx *, Signature *, const char *);
@@ -1188,7 +1197,7 @@ typedef struct SigTableElmt_ {
     bool (*SupportsPrefilter)(const Signature *s);
     int (*SetupPrefilter)(DetectEngineCtx *de_ctx, struct SigGroupHead_ *sgh);
 
-    void (*Free)(void *);
+    void (*Free)(DetectEngineCtx *, void *);
     void (*RegisterTests)(void);
 
     uint16_t flags;
@@ -1457,7 +1466,7 @@ Signature *SigFindSignatureBySidGid(DetectEngineCtx *, uint32_t, uint32_t);
 void SigMatchSignaturesBuildMatchArray(DetectEngineThreadCtx *,
                                        Packet *, SignatureMask,
                                        uint16_t);
-void SigMatchFree(SigMatch *sm);
+void SigMatchFree(DetectEngineCtx *, SigMatch *sm);
 
 void SigRegisterTests(void);
 void TmModuleDetectRegister (void);
@@ -1476,6 +1485,7 @@ const SigGroupHead *SigMatchSignaturesGetSgh(const DetectEngineCtx *de_ctx, cons
 Signature *DetectGetTagSignature(void);
 
 
+int DetectUnregisterThreadCtxFuncs(DetectEngineCtx *, DetectEngineThreadCtx *,void *data, const char *name);
 int DetectRegisterThreadCtxFuncs(DetectEngineCtx *, const char *name, void *(*InitFunc)(void *), void *data, void (*FreeFunc)(void *), int);
 void *DetectThreadCtxGetKeywordThreadCtx(DetectEngineThreadCtx *, int);
 
@@ -1484,7 +1494,7 @@ void DetectSignatureApplyActions(Packet *p, const Signature *s, const uint8_t);
 void RuleMatchCandidateTxArrayInit(DetectEngineThreadCtx *det_ctx, uint32_t size);
 void RuleMatchCandidateTxArrayFree(DetectEngineThreadCtx *det_ctx);
 
-void DetectFlowbitsAnalyze(DetectEngineCtx *de_ctx);
+int DetectFlowbitsAnalyze(DetectEngineCtx *de_ctx);
 
 int DetectMetadataHashInit(DetectEngineCtx *de_ctx);
 void DetectMetadataHashFree(DetectEngineCtx *de_ctx);

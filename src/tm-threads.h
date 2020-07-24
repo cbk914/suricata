@@ -240,7 +240,10 @@ int TmThreadsRegisterThread(ThreadVars *tv, const int type);
 void TmThreadsUnregisterThread(const int id);
 int TmThreadsInjectPacketsById(Packet **, int id);
 
+void TmThreadsInitThreadsTimestamp(const struct timeval *ts);
 void TmThreadsSetThreadTimestamp(const int id, const struct timeval *ts);
-void TmreadsGetMinimalTimestamp(struct timeval *ts);
+void TmThreadsGetMinimalTimestamp(struct timeval *ts);
+uint16_t TmThreadsGetWorkerThreadMax(void);
+bool TmThreadsTimeSubsysIsReady(void);
 
 #endif /* __TM_THREADS_H__ */

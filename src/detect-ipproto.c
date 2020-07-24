@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2013 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -48,25 +48,24 @@
  */
 #define PARSE_REGEX  "^([!<>]?)\\s*([^\\s]+)$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectIPProtoSetup(DetectEngineCtx *, Signature *, const char *);
 static void DetectIPProtoRegisterTests(void);
-static void DetectIPProtoFree(void *);
+static void DetectIPProtoFree(DetectEngineCtx *, void *);
 
 void DetectIPProtoRegister(void)
 {
     sigmatch_table[DETECT_IPPROTO].name = "ip_proto";
     sigmatch_table[DETECT_IPPROTO].desc = "match on the IP protocol in the packet-header";
-    sigmatch_table[DETECT_IPPROTO].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#ip-proto";
+    sigmatch_table[DETECT_IPPROTO].url = "/rules/header-keywords.html#ip-proto";
     sigmatch_table[DETECT_IPPROTO].Match = NULL;
     sigmatch_table[DETECT_IPPROTO].Setup = DetectIPProtoSetup;
     sigmatch_table[DETECT_IPPROTO].Free  = DetectIPProtoFree;
     sigmatch_table[DETECT_IPPROTO].RegisterTests = DetectIPProtoRegisterTests;
     sigmatch_table[DETECT_IPPROTO].flags = SIGMATCH_QUOTES_OPTIONAL;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /**
@@ -81,15 +80,13 @@ static DetectIPProtoData *DetectIPProtoParse(const char *optstr)
 {
     DetectIPProtoData *data = NULL;
     char *args[2] = { NULL, NULL };
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     int i;
     const char *str_ptr;
 
     /* Execute the regex and populate args with captures. */
-    ret = pcre_exec(parse_regex, parse_regex_study, optstr,
-                    strlen(optstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, optstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret != 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret"
                    "%" PRId32 ", string %s", ret, optstr);
@@ -129,7 +126,7 @@ static DetectIPProtoData *DetectIPProtoParse(const char *optstr)
         data->proto = (uint8_t)pent->p_proto;
     }
     else {
-        if (ByteExtractStringUint8(&data->proto, 10, 0, args[1]) <= 0) {
+        if (StringParseUint8(&data->proto, 10, 0, args[1]) <= 0) {
             SCLogError(SC_ERR_INVALID_VALUE, "Malformed protocol number: %s",
                        str_ptr);
             goto error;
@@ -421,12 +418,12 @@ static int DetectIPProtoSetup(DetectEngineCtx *de_ctx, Signature *s, const char 
 
  error:
 
-    DetectIPProtoFree(data);
+    DetectIPProtoFree(de_ctx, data);
     return -1;
 }
 
 
-void DetectIPProtoRemoveAllSMs(Signature *s)
+void DetectIPProtoRemoveAllSMs(DetectEngineCtx *de_ctx, Signature *s)
 {
     SigMatch *sm = s->init_data->smlists[DETECT_SM_LIST_MATCH];
 
@@ -437,14 +434,14 @@ void DetectIPProtoRemoveAllSMs(Signature *s)
         }
         SigMatch *tmp_sm = sm->next;
         SigMatchRemoveSMFromList(s, sm, DETECT_SM_LIST_MATCH);
-        SigMatchFree(sm);
+        SigMatchFree(de_ctx, sm);
         sm = tmp_sm;
     }
 
     return;
 }
 
-static void DetectIPProtoFree(void *ptr)
+static void DetectIPProtoFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectIPProtoData *data = (DetectIPProtoData *)ptr;
     if (data) {
@@ -481,7 +478,8 @@ static int DetectIPProtoTestParse02(void)
 static int DetectIPProtoTestSetup01(void)
 {
     const char *value_str = "14";
-    int value = atoi(value_str);
+    int value;
+    FAIL_IF(StringParseInt32(&value, 10, 0, (const char *)value_str) < 0);
     int i;
 
     Signature *sig = SigAlloc();
@@ -497,7 +495,7 @@ static int DetectIPProtoTestSetup01(void)
     for (i = (value / 8) + 1; i < (256 / 8); i++) {
         FAIL_IF(sig->proto.proto[i] != 0);
     }
-    SigFree(sig);
+    SigFree(NULL, sig);
     PASS;
 }
 
@@ -538,7 +536,7 @@ static int DetectIPProtoTestSetup02(void)
 
  end:
     if (sig != NULL)
-        SigFree(sig);
+        SigFree(NULL, sig);
     return result;
 }
 
@@ -574,7 +572,7 @@ static int DetectIPProtoTestSetup03(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -610,7 +608,7 @@ static int DetectIPProtoTestSetup04(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -646,7 +644,7 @@ static int DetectIPProtoTestSetup05(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -673,7 +671,7 @@ static int DetectIPProtoTestSetup06(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -700,7 +698,7 @@ static int DetectIPProtoTestSetup07(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -727,7 +725,7 @@ static int DetectIPProtoTestSetup08(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -754,7 +752,7 @@ static int DetectIPProtoTestSetup09(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -781,7 +779,7 @@ static int DetectIPProtoTestSetup10(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -808,7 +806,7 @@ static int DetectIPProtoTestSetup11(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -835,7 +833,7 @@ static int DetectIPProtoTestSetup12(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -862,7 +860,7 @@ static int DetectIPProtoTestSetup13(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -886,7 +884,7 @@ static int DetectIPProtoTestSetup14(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -923,7 +921,7 @@ static int DetectIPProtoTestSetup15(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 
 }
@@ -961,7 +959,7 @@ static int DetectIPProtoTestSetup16(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 
 }
@@ -999,7 +997,7 @@ static int DetectIPProtoTestSetup17(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 
 }
@@ -1037,7 +1035,7 @@ static int DetectIPProtoTestSetup18(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 
 }
@@ -1078,7 +1076,7 @@ static int DetectIPProtoTestSetup19(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1115,7 +1113,7 @@ static int DetectIPProtoTestSetup20(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1155,7 +1153,7 @@ static int DetectIPProtoTestSetup21(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1195,7 +1193,7 @@ static int DetectIPProtoTestSetup22(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1232,7 +1230,7 @@ static int DetectIPProtoTestSetup23(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1272,7 +1270,7 @@ static int DetectIPProtoTestSetup24(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1312,7 +1310,7 @@ static int DetectIPProtoTestSetup33(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1353,7 +1351,7 @@ static int DetectIPProtoTestSetup34(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1393,7 +1391,7 @@ static int DetectIPProtoTestSetup36(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1437,7 +1435,7 @@ static int DetectIPProtoTestSetup43(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1477,7 +1475,7 @@ static int DetectIPProtoTestSetup44(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1521,7 +1519,7 @@ static int DetectIPProtoTestSetup45(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1561,7 +1559,7 @@ static int DetectIPProtoTestSetup56(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1598,7 +1596,7 @@ static int DetectIPProtoTestSetup75(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1635,7 +1633,7 @@ static int DetectIPProtoTestSetup76(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1672,7 +1670,7 @@ static int DetectIPProtoTestSetup129(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1709,7 +1707,7 @@ static int DetectIPProtoTestSetup130(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1746,7 +1744,7 @@ static int DetectIPProtoTestSetup131(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1783,7 +1781,7 @@ static int DetectIPProtoTestSetup132(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 
@@ -1853,7 +1851,7 @@ static int DetectIPProtoTestSetup145(void)
     result = 1;
 
  end:
-    SigFree(sig);
+    SigFree(NULL, sig);
     return result;
 }
 

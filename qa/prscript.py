@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright(C) 2013, 2014, 2015 Open Information Security Foundation
+# Copyright(C) 2013-2020 Open Information Security Foundation
 
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -12,7 +12,7 @@
 #
 # You should have received a copy of the GNU General Public License
 # along with this program; if not, write to the Free Software
-# Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 
 # Note to Docker users:
 # If you are running SELinux in enforced mode, you may want to run
@@ -165,7 +165,7 @@ def OpenBuildbotSession():
     opener = urllib2.build_opener(urllib2.HTTPCookieProcessor(cookie))
     urllib2.install_opener(opener)
     request = urllib2.Request(BASE_URI + 'login', params)
-    page = urllib2.urlopen(request)
+    _ = urllib2.urlopen(request)
     return cookie
 
 
@@ -310,12 +310,10 @@ def RmContainer():
             cli.remove_container('suri-buildbot')
         except:
             print "Unable to remove suri-buildbot container"
-            pass
         try:
             cli.remove_image('regit/suri-buildbot:latest')
         except:
             print "Unable to remove suri-buildbot images"
-            pass
     else:
         cli = DockerClient()
         cli.containers.get('suri-buildbot').remove()

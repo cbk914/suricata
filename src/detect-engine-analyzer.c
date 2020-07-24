@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2018 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -238,8 +238,7 @@ void EngineAnalysisFP(const DetectEngineCtx *de_ctx, const Signature *s, char *l
     uint16_t patlen = fp_cd->content_len;
     uint8_t *pat = SCMalloc(fp_cd->content_len + 1);
     if (unlikely(pat == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Error allocating memory");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Error allocating memory");
     }
     memcpy(pat, fp_cd->content, fp_cd->content_len);
     pat[fp_cd->content_len] = '\0';
@@ -413,7 +412,7 @@ void CleanupFPAnalyzer(void)
 void CleanupRuleAnalyzer(void)
 {
     if (rule_engine_analysis_FD != NULL) {
-         SCLogInfo("Engine-Analyis for rules printed to file - %s", log_path);
+         SCLogInfo("Engine-Analysis for rules printed to file - %s", log_path);
         fclose(rule_engine_analysis_FD);
         rule_engine_analysis_FD = NULL;
     }
@@ -486,8 +485,7 @@ static void EngineAnalysisRulesPrintFP(const DetectEngineCtx *de_ctx, const Sign
     uint16_t patlen = fp_cd->content_len;
     uint8_t *pat = SCMalloc(fp_cd->content_len + 1);
     if (unlikely(pat == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Error allocating memory");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Error allocating memory");
     }
     memcpy(pat, fp_cd->content, fp_cd->content_len);
     pat[fp_cd->content_len] = '\0';
@@ -634,8 +632,7 @@ static void DumpMatches(RuleAnalyzer *ctx, json_t *js, const SigMatchData *smd)
                     const DetectContentData *cd = (const DetectContentData *)smd->ctx;
                     uint8_t *pat = SCMalloc(cd->content_len + 1);
                     if (unlikely(pat == NULL)) {
-                        SCLogError(SC_ERR_MEM_ALLOC, "Error allocating memory");
-                        exit(EXIT_FAILURE);
+                        FatalError(SC_ERR_FATAL, "Error allocating memory");
                     }
                     memcpy(pat, cd->content, cd->content_len);
                     pat[cd->content_len] = '\0';

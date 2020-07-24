@@ -1,4 +1,4 @@
-/* Copyright (C) 2018 Open Information Security Foundation
+/* Copyright (C) 2018-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,8 +19,7 @@ use std;
 use crate::core::{self, ALPROTO_UNKNOWN, AppProto, Flow, IPPROTO_TCP};
 use crate::log::*;
 use std::mem::transmute;
-use crate::applayer::{self, LoggerFlags};
-use crate::parser::*;
+use crate::applayer::{self, *};
 use std::ffi::CString;
 use nom;
 use super::parser;
@@ -32,9 +31,9 @@ pub struct TemplateTransaction {
     pub request: Option<String>,
     pub response: Option<String>,
 
-    logged: LoggerFlags,
     de_state: Option<*mut core::DetectEngineState>,
     events: *mut core::AppLayerDecoderEvents,
+    tx_data: AppLayerTxData,
 }
 
 impl TemplateTransaction {
@@ -43,9 +42,9 @@ impl TemplateTransaction {
             tx_id: 0,
             request: None,
             response: None,
-            logged: LoggerFlags::new(),
             de_state: None,
             events: std::ptr::null_mut(),
+            tx_data: AppLayerTxData::new(),
         }
     }
 
@@ -67,18 +66,18 @@ impl Drop for TemplateTransaction {
 
 pub struct TemplateState {
     tx_id: u64,
-    request_buffer: Vec<u8>,
-    response_buffer: Vec<u8>,
     transactions: Vec<TemplateTransaction>,
+    request_gap: bool,
+    response_gap: bool,
 }
 
 impl TemplateState {
     pub fn new() -> Self {
         Self {
             tx_id: 0,
-            request_buffer: Vec::new(),
-            response_buffer: Vec::new(),
             transactions: Vec::new(),
+            request_gap: false,
+            response_gap: false,
         }
     }
 
@@ -125,63 +124,65 @@ impl TemplateState {
         None
     }
 
-    fn parse_request(&mut self, input: &[u8]) -> bool {
+    fn parse_request(&mut self, input: &[u8]) -> AppLayerResult {
         // We're not interested in empty requests.
         if input.len() == 0 {
-            return true;
+            return AppLayerResult::ok();
         }
 
-        // For simplicity, always extend the buffer and work on it.
-        self.request_buffer.extend(input);
+        // If there was gap, check we can sync up again.
+        if self.request_gap {
+            if probe(input).is_err() {
+                // The parser now needs to decide what to do as we are not in sync.
+                // For this template, we'll just try again next time.
+                return AppLayerResult::ok();
+            }
 
-        let tmp: Vec<u8>;
-        let mut current = {
-            tmp = self.request_buffer.split_off(0);
-            tmp.as_slice()
-        };
+            // It looks like we're in sync with a message header, clear gap
+            // state and keep parsing.
+            self.request_gap = false;
+        }
 
-        while current.len() > 0 {
-            match parser::parse_message(current) {
+        let mut start = input;
+        while start.len() > 0 {
+            match parser::parse_message(start) {
                 Ok((rem, request)) => {
-                    current = rem;
+                    start = rem;
 
                     SCLogNotice!("Request: {}", request);
                     let mut tx = self.new_tx();
                     tx.request = Some(request);
                     self.transactions.push(tx);
-                }
+                },
                 Err(nom::Err::Incomplete(_)) => {
-                    self.request_buffer.extend_from_slice(current);
-                    break;
-                }
+                    // Not enough data. This parser doesn't give us a good indication
+                    // of how much data is missing so just ask for one more byte so the
+                    // parse is called as soon as more data is received.
+                    let consumed = input.len() - start.len();
+                    let needed = start.len() + 1;
+                    return AppLayerResult::incomplete(consumed as u32, needed as u32);
+                },
                 Err(_) => {
-                    return false;
-                }
+                    return AppLayerResult::err();
+                },
             }
         }
 
-        return true;
+        // Input was fully consumed.
+        return AppLayerResult::ok();
     }
 
-    fn parse_response(&mut self, input: &[u8]) -> bool {
+    fn parse_response(&mut self, input: &[u8]) -> AppLayerResult {
         // We're not interested in empty responses.
         if input.len() == 0 {
-            return true;
+            return AppLayerResult::ok();
         }
 
-        // For simplicity, always extend the buffer and work on it.
-        self.response_buffer.extend(input);
-
-        let tmp: Vec<u8>;
-        let mut current = {
-            tmp = self.response_buffer.split_off(0);
-            tmp.as_slice()
-        };
-
-        while current.len() > 0 {
-            match parser::parse_message(current) {
+        let mut start = input;
+        while start.len() > 0 {
+            match parser::parse_message(start) {
                 Ok((rem, response)) => {
-                    current = rem;
+                    start = rem;
 
                     match self.find_request() {
                         Some(tx) => {
@@ -194,16 +195,18 @@ impl TemplateState {
                     }
                 }
                 Err(nom::Err::Incomplete(_)) => {
-                    self.response_buffer.extend_from_slice(current);
-                    break;
+                    let consumed = input.len() - start.len();
+                    let needed = start.len() + 1;
+                    return AppLayerResult::incomplete(consumed as u32, needed as u32);
                 }
                 Err(_) => {
-                    return false;
+                    return AppLayerResult::err();
                 }
             }
         }
 
-        return true;
+        // All input was fully consumed.
+        return AppLayerResult::ok();
     }
 
     fn tx_iterator(
@@ -226,19 +229,29 @@ impl TemplateState {
 
         return None;
     }
+
+    fn on_request_gap(&mut self, _size: u32) {
+        self.request_gap = true;
+    }
+
+    fn on_response_gap(&mut self, _size: u32) {
+        self.response_gap = true;
+    }
 }
 
-/// Probe to see if this input looks like a request or response.
+/// Probe for a valid header.
 ///
-/// For the purposes of this template things will be kept simple. The
-/// protocol is text based with the leading text being the length of
-/// the message in bytes. So simply make sure the first character is
-/// between "1" and "9".
-fn probe(input: &[u8]) -> bool {
-    if input.len() > 1 && input[0] >= 49 && input[0] <= 57 {
-        return true;
-    }
-    return false;
+/// As this template protocol uses messages prefixed with the size
+/// as a string followed by a ':', we look at up to the first 10
+/// characters for that pattern.
+fn probe(input: &[u8]) -> nom::IResult<&[u8], ()> {
+    let size = std::cmp::min(10, input.len());
+    let (rem, prefix) = nom::bytes::complete::take(size)(input)?;
+    nom::sequence::terminated(
+        nom::bytes::complete::take_while1(nom::character::is_digit),
+        nom::bytes::complete::tag(":"),
+    )(prefix)?;
+    Ok((rem, ()))
 }
 
 // C exports.
@@ -264,7 +277,7 @@ pub extern "C" fn rs_template_probing_parser(
     // Need at least 2 bytes.
     if input_len > 1 && input != std::ptr::null_mut() {
         let slice = build_slice!(input, input_len as usize);
-        if probe(slice) {
+        if probe(slice).is_ok() {
             return unsafe { ALPROTO_TEMPLATE };
         }
     }
@@ -302,7 +315,7 @@ pub extern "C" fn rs_template_parse_request(
     input_len: u32,
     _data: *const std::os::raw::c_void,
     _flags: u8,
-) -> i32 {
+) -> AppLayerResult {
     let eof = unsafe {
         if AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF) > 0 {
             true
@@ -313,14 +326,20 @@ pub extern "C" fn rs_template_parse_request(
 
     if eof {
         // If needed, handled EOF, or pass it into the parser.
+        return AppLayerResult::ok();
     }
 
     let state = cast_pointer!(state, TemplateState);
-    let buf = build_slice!(input, input_len as usize);
-    if state.parse_request(buf) {
-        return 1;
+
+    if input == std::ptr::null_mut() && input_len > 0 {
+        // Here we have a gap signaled by the input being null, but a greater
+        // than 0 input_len which provides the size of the gap.
+        state.on_request_gap(input_len);
+        AppLayerResult::ok()
+    } else {
+        let buf = build_slice!(input, input_len as usize);
+        state.parse_request(buf)
     }
-    return -1;
 }
 
 #[no_mangle]
@@ -332,7 +351,7 @@ pub extern "C" fn rs_template_parse_response(
     input_len: u32,
     _data: *const std::os::raw::c_void,
     _flags: u8,
-) -> i32 {
+) -> AppLayerResult {
     let _eof = unsafe {
         if AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF) > 0 {
             true
@@ -341,11 +360,16 @@ pub extern "C" fn rs_template_parse_response(
         }
     };
     let state = cast_pointer!(state, TemplateState);
-    let buf = build_slice!(input, input_len as usize);
-    if state.parse_response(buf) {
-        return 1;
+
+    if input == std::ptr::null_mut() && input_len > 0 {
+        // Here we have a gap signaled by the input being null, but a greater
+        // than 0 input_len which provides the size of the gap.
+        state.on_response_gap(input_len);
+        AppLayerResult::ok()
+    } else {
+        let buf = build_slice!(input, input_len as usize);
+        state.parse_response(buf).into()
     }
-    return -1;
 }
 
 #[no_mangle]
@@ -392,25 +416,6 @@ pub extern "C" fn rs_template_tx_get_alstate_progress(
         return 1;
     }
     return 0;
-}
-
-#[no_mangle]
-pub extern "C" fn rs_template_tx_get_logged(
-    _state: *mut std::os::raw::c_void,
-    tx: *mut std::os::raw::c_void,
-) -> u32 {
-    let tx = cast_pointer!(tx, TemplateTransaction);
-    return tx.logged.get();
-}
-
-#[no_mangle]
-pub extern "C" fn rs_template_tx_set_logged(
-    _state: *mut std::os::raw::c_void,
-    tx: *mut std::os::raw::c_void,
-    logged: u32,
-) {
-    let tx = cast_pointer!(tx, TemplateTransaction);
-    tx.logged.set(logged);
 }
 
 #[no_mangle]
@@ -508,6 +513,8 @@ pub extern "C" fn rs_template_get_response_buffer(
     return 0;
 }
 
+export_tx_data_get!(rs_template_get_tx_data, TemplateTransaction);
+
 // Parser name as a C style string.
 const PARSER_NAME: &'static [u8] = b"template-rust\0";
 
@@ -531,8 +538,6 @@ pub unsafe extern "C" fn rs_template_register_parser() {
         get_tx: rs_template_state_get_tx,
         tx_get_comp_st: rs_template_state_progress_completion_status,
         tx_get_progress: rs_template_tx_get_alstate_progress,
-        get_tx_logged: Some(rs_template_tx_get_logged),
-        set_tx_logged: Some(rs_template_tx_set_logged),
         get_de_state: rs_template_tx_get_detect_state,
         set_de_state: rs_template_tx_set_detect_state,
         get_events: Some(rs_template_state_get_events),
@@ -540,12 +545,11 @@ pub unsafe extern "C" fn rs_template_register_parser() {
         get_eventinfo_byid : Some(rs_template_state_get_event_info_by_id),
         localstorage_new: None,
         localstorage_free: None,
-        get_tx_mpm_id: None,
-        set_tx_mpm_id: None,
         get_files: None,
         get_tx_iterator: Some(rs_template_state_get_tx_iterator),
-        get_tx_detect_flags: None,
-        set_tx_detect_flags: None,
+        get_tx_data: rs_template_get_tx_data,
+        apply_tx_config: None,
+        flags: APP_LAYER_PARSER_OPT_ACCEPT_GAPS,
     };
 
     let ip_proto_str = CString::new("tcp").unwrap();
@@ -567,5 +571,41 @@ pub unsafe extern "C" fn rs_template_register_parser() {
         SCLogNotice!("Rust template parser registered.");
     } else {
         SCLogNotice!("Protocol detector and parser disabled for TEMPLATE.");
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_probe() {
+        assert!(probe(b"1").is_err());
+        assert!(probe(b"1:").is_ok());
+        assert!(probe(b"123456789:").is_ok());
+        assert!(probe(b"0123456789:").is_err());
+    }
+
+    #[test]
+    fn test_incomplete() {
+        let mut state = TemplateState::new();
+        let buf = b"5:Hello3:bye";
+
+        let r = state.parse_request(&buf[0..0]);
+        assert_eq!(r, AppLayerResult{ status: 0, consumed: 0, needed: 0});
+
+        let r = state.parse_request(&buf[0..1]);
+        assert_eq!(r, AppLayerResult{ status: 1, consumed: 0, needed: 2});
+
+        let r = state.parse_request(&buf[0..2]);
+        assert_eq!(r, AppLayerResult{ status: 1, consumed: 0, needed: 3});
+
+        // This is the first message and only the first message.
+        let r = state.parse_request(&buf[0..7]);
+        assert_eq!(r, AppLayerResult{ status: 0, consumed: 0, needed: 0});
+
+        // The first message and a portion of the second.
+        let r = state.parse_request(&buf[0..9]);
+        assert_eq!(r, AppLayerResult{ status: 1, consumed: 7, needed: 3});
     }
 }

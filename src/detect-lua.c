@@ -43,6 +43,7 @@
 #include "util-debug.h"
 #include "util-spm-bm.h"
 #include "util-print.h"
+#include "util-byte.h"
 
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
@@ -76,7 +77,7 @@ void DetectLuaRegister(void)
     sigmatch_table[DETECT_LUA].name = "lua";
     sigmatch_table[DETECT_LUA].alias = "luajit";
     sigmatch_table[DETECT_LUA].desc = "support for lua scripting";
-    sigmatch_table[DETECT_LUA].url = DOC_URL DOC_VERSION "/rules/rule-lua-scripting.html";
+    sigmatch_table[DETECT_LUA].url = "/rules/rule-lua-scripting.html";
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetupNoSupport;
     sigmatch_table[DETECT_LUA].Free  = NULL;
     sigmatch_table[DETECT_LUA].RegisterTests = NULL;
@@ -98,7 +99,7 @@ static int DetectLuaAppTxMatch (DetectEngineThreadCtx *det_ctx,
                                 const SigMatchCtx *ctx);
 static int DetectLuaSetup (DetectEngineCtx *, Signature *, const char *);
 static void DetectLuaRegisterTests(void);
-static void DetectLuaFree(void *);
+static void DetectLuaFree(DetectEngineCtx *, void *);
 static int g_smtp_generic_list_id = 0;
 
 static int InspectSmtpGeneric(ThreadVars *tv,
@@ -115,7 +116,7 @@ void DetectLuaRegister(void)
     sigmatch_table[DETECT_LUA].name = "lua";
     sigmatch_table[DETECT_LUA].alias = "luajit";
     sigmatch_table[DETECT_LUA].desc = "match via a lua script";
-    sigmatch_table[DETECT_LUA].url = DOC_URL DOC_VERSION "/rules/rule-lua-scripting.html";
+    sigmatch_table[DETECT_LUA].url = "/rules/rule-lua-scripting.html";
     sigmatch_table[DETECT_LUA].Match = DetectLuaMatch;
     sigmatch_table[DETECT_LUA].AppLayerTxMatch = DetectLuaAppTxMatch;
     sigmatch_table[DETECT_LUA].Setup = DetectLuaSetup;
@@ -280,8 +281,15 @@ int DetectLuaMatchBuffer(DetectEngineThreadCtx *det_ctx,
                 SCLogDebug("k='%s', v='%s'", k, v);
 
                 if (strcmp(k, "retval") == 0) {
-                    if (atoi(v) == 1)
+                    int val;
+                    if (StringParseInt32(&val, 10, 0, (const char *)v) < 0) {
+                        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value "
+                                   "for \"retval\" from LUA return table: '%s'", v);
+                        ret = 0;
+                    }
+                    else if (val == 1) {
                         ret = 1;
+                    }
                 } else {
                     /* set flow var? */
                 }
@@ -428,8 +436,16 @@ static int DetectLuaMatch (DetectEngineThreadCtx *det_ctx,
                 SCLogDebug("k='%s', v='%s'", k, v);
 
                 if (strcmp(k, "retval") == 0) {
-                    if (atoi(v) == 1)
+                    int val;
+                    if (StringParseInt32(&val, 10, 0,
+                                         (const char *)v) < 0) {
+                        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value "
+                                   "for \"retval\" from LUA return table: '%s'", v);
+                        ret = 0;
+                    }
+                    else if (val == 1) {
                         ret = 1;
+                    }
                 } else {
                     /* set flow var? */
                 }
@@ -530,8 +546,16 @@ static int DetectLuaAppMatchCommon (DetectEngineThreadCtx *det_ctx,
                 SCLogDebug("k='%s', v='%s'", k, v);
 
                 if (strcmp(k, "retval") == 0) {
-                    if (atoi(v) == 1)
+                    int val;
+                    if (StringParseInt32(&val, 10, 0,
+                                         (const char *)v) < 0) {
+                        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value "
+                                   "for \"retval\" from LUA return table: '%s'", v);
+                        ret = 0;
+                    }
+                    else if (val == 1) {
                         ret = 1;
+                    }
                 } else {
                     /* set flow var? */
                 }
@@ -660,12 +684,13 @@ static void DetectLuaThreadFree(void *ctx)
 /**
  * \brief Parse the lua keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param str Pointer to the user provided option
  *
  * \retval lua pointer to DetectLuaData on success
  * \retval NULL on failure
  */
-static DetectLuaData *DetectLuaParse (const DetectEngineCtx *de_ctx, const char *str)
+static DetectLuaData *DetectLuaParse (DetectEngineCtx *de_ctx, const char *str)
 {
     DetectLuaData *lua = NULL;
 
@@ -691,7 +716,7 @@ static DetectLuaData *DetectLuaParse (const DetectEngineCtx *de_ctx, const char 
 
 error:
     if (lua != NULL)
-        DetectLuaFree(lua);
+        DetectLuaFree(de_ctx, lua);
     return NULL;
 }
 
@@ -1077,7 +1102,7 @@ static int DetectLuaSetup (DetectEngineCtx *de_ctx, Signature *s, const char *st
 
 error:
     if (lua != NULL)
-        DetectLuaFree(lua);
+        DetectLuaFree(de_ctx, lua);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -1109,7 +1134,7 @@ void DetectLuaPostSetup(Signature *s)
  *
  * \param ptr pointer to DetectLuaData
  */
-static void DetectLuaFree(void *ptr)
+static void DetectLuaFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL) {
         DetectLuaData *lua = (DetectLuaData *)ptr;
@@ -1118,6 +1143,8 @@ static void DetectLuaFree(void *ptr)
             SCFree(lua->buffername);
         if (lua->filename)
             SCFree(lua->filename);
+
+        DetectUnregisterThreadCtxFuncs(de_ctx, NULL, lua, "lua");
 
         SCFree(lua);
     }

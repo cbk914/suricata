@@ -19,6 +19,10 @@ if DEBUG
 RUST_FEATURES +=	debug
 endif
 
+if DEBUG_VALIDATION
+RUST_FEATURES +=	debug-validate
+endif
+
 if RUST_CROSS_COMPILE 
 RUST_TARGET = --target $(host_triplet)
 endif
@@ -74,3 +78,6 @@ gen/rust-bindings.h:
 else
 gen/rust-bindings.h:
 endif
+
+doc:
+	CARGO_HOME=$(CARGO_HOME) $(CARGO) doc --all-features --no-deps

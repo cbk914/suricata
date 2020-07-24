@@ -1,4 +1,4 @@
-/* Copyright (C) 2012-2017 Open Information Security Foundation
+/* Copyright (C) 2012-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -250,6 +250,7 @@ struct tcp_hdr
 
 #define COLOR_IS_SPAN                       0x00001000
 
+static int is_inline = 0;
 static int inline_port_map[MAX_PORTS] = { -1 };
 
 /**
@@ -359,6 +360,37 @@ static int CompareIPv6Addr(uint8_t addr_a[16], uint8_t addr_b[16]) {
 }
 
 /**
+ * \brief  Initializes the FlowStreams used to program flow data.
+ *
+ * Opens a FlowStream on the adapter associated with the rx port.  This
+ * FlowStream is subsequently used to program the adapter with
+ * flows to bypass.
+ *
+ * \return the flow stream handle, NULL if failure.
+ */
+static NtFlowStream_t InitFlowStream(int adapter, int stream_id)
+{
+    int status;
+    NtFlowStream_t hFlowStream;
+
+    NtFlowAttr_t attr;
+    char flow_name[80];
+
+    NT_FlowOpenAttrInit(&attr);
+    NT_FlowOpenAttrSetAdapterNo(&attr, adapter);
+
+    snprintf(flow_name, sizeof(flow_name), "Flow_stream_%d", stream_id );
+    SCLogDebug("Opening flow programming stream:  %s", flow_name);
+    if ((status = NT_FlowOpen_Attr(&hFlowStream, flow_name, &attr)) != NT_SUCCESS) {
+        SCLogWarning(SC_WARN_COMPATIBILITY,
+                "Napatech bypass functionality not supported by the FPGA version on adapter %d - disabling support.",
+                adapter);
+        return NULL;
+    }
+    return hFlowStream;
+}
+
+/**
  * \brief Callback function to process Bypass events on Napatech Adapter.
  *
  * Callback function that sets up the Flow tables on the Napatech card
@@ -372,16 +404,10 @@ static int CompareIPv6Addr(uint8_t addr_a[16], uint8_t addr_b[16]) {
  */
 static int ProgramFlow(Packet *p, int is_inline)
 {
-    int status;
     NtFlow_t flow_match;
     memset(&flow_match, 0, sizeof(flow_match));
 
     NapatechPacketVars *ntpv = &(p->ntpv);
-
-    int adapter = NapatechGetAdapter(ntpv->dyn3->rxPort);
-
-    NtFlowStream_t *phFlowStream = NapatechGetFlowStreamPtr(adapter);
-
 
     /*
      * The hardware decoder will "color" the packets according to the protocols
@@ -427,12 +453,11 @@ static int ProgramFlow(Packet *p, int is_inline)
         case RTE_PTYPE_L3_IPV4:
         {
             pIPv4_hdr = (struct ipv4_hdr *) (packet + ntpv->dyn3->offset0);
-
             if (!is_span) {
                 v4Tuple.sa = pIPv4_hdr->src_addr;
                 v4Tuple.da = pIPv4_hdr->dst_addr;
             } else {
-                do_swap = (pIPv4_hdr->src_addr > pIPv4_hdr->dst_addr);
+                do_swap = (htonl(pIPv4_hdr->src_addr) > htonl(pIPv4_hdr->dst_addr));
                 if (!do_swap) {
                     /* already in order */
                     v4Tuple.sa = pIPv4_hdr->src_addr;
@@ -570,12 +595,11 @@ static int ProgramFlow(Packet *p, int is_inline)
         }
     }
 
-    status = NT_FlowWrite(*phFlowStream, &flow_match, -1);
-    if (status == NT_STATUS_TIMEOUT) {
-        SCLogInfo("NT_FlowWrite returned NT_STATUS_TIMEOUT");
-    } else if (status != NT_SUCCESS) {
-        SCLogError(SC_ERR_NAPATECH_OPEN_FAILED,"NT_FlowWrite failed!.");
-        exit(EXIT_FAILURE);
+    if (NT_FlowWrite(ntpv->flow_stream, &flow_match, -1) != NT_SUCCESS) {
+        if (!(suricata_ctl_flags & SURICATA_STOP)) {
+            SCLogError(SC_ERR_NAPATECH_OPEN_FAILED,"NT_FlowWrite failed!.");
+            exit(EXIT_FAILURE);
+        }
     }
 
     return 1;
@@ -628,8 +652,8 @@ TmEcode NapatechStreamThreadInit(ThreadVars *tv, const void *initdata, void **da
 
     NapatechThreadVars *ntv = SCCalloc(1, sizeof (NapatechThreadVars));
     if (unlikely(ntv == NULL)) {
-        SCLogError(SC_ERR_MEM_ALLOC, "Failed to allocate memory for NAPATECH  thread vars.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Failed to allocate memory for NAPATECH  thread vars.");
     }
 
     memset(ntv, 0, sizeof (NapatechThreadVars));
@@ -642,21 +666,40 @@ TmEcode NapatechStreamThreadInit(ThreadVars *tv, const void *initdata, void **da
     SCReturnInt(TM_ECODE_OK);
 }
 
-static PacketQueue packets_to_release[MAX_STREAMS];
-
 /**
  * \brief Callback to indicate that the packet buffer can be returned to the hardware.
  *
- *  Called when Suricata is done processing the packet.  The packet is placed into
- *  a queue so that it can be retrieved and released by the packet processing thread.
+ *  Called when Suricata is done processing the packet.  Before the packet is released
+ *  this also checks the action to see if the packet should be dropped and programs the
+ *  flow hardware if the flow is to be bypassed and the Napatech packet buffer is released.
+ *
  *
  * \param p Packet to return to the system.
  *
  */
 static void NapatechReleasePacket(struct Packet_ *p)
 {
+    /*
+     * If the packet is to be dropped we need to set the wirelength
+     * before releasing the Napatech buffer back to NTService.
+     */
+    if (is_inline && PACKET_TEST_ACTION(p, ACTION_DROP)) {
+        p->ntpv.dyn3->wireLength = 0;
+    }
+
+#ifdef NAPATECH_ENABLE_BYPASS
+    /*
+     *  If this flow is to be programmed for hardware bypass we do it now.  This is done
+     *  here because the action is not available in the packet structure at the time of the
+     *  bypass callback and it needs to be done before we release the packet structure.
+     */
+    if (p->ntpv.bypass == 1) {
+        ProgramFlow(p, is_inline);
+    }
+#endif
+
+    NT_NetRxRelease(p->ntpv.rx_stream, p->ntpv.nt_packet_buf);
     PacketFreeOrRelease(p);
-    PacketEnqueue(&packets_to_release[p->ntpv.stream_id], p);
 }
 
 /**
@@ -756,15 +799,23 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
     int numa_node = -1;
     int set_cpu_affinity = 0;
     int closer = 0;
-    int is_inline = 0;
     int is_autoconfig = 0;
 
     /* This just keeps the startup output more orderly. */
     usleep(200000 * ntv->stream_id);
 
-    if (ConfGetBool("napatech.inline", &is_inline) == 0) {
-        is_inline = 0;
+#ifdef NAPATECH_ENABLE_BYPASS
+    NtFlowStream_t flow_stream[MAX_ADAPTERS] = { 0 };
+
+    /* Get a FlowStream handle for each adapter so we can efficiently find the
+     * correct handle corresponding to the port on which a packet is received.
+     */
+    int adapter = 0;
+    for (adapter = 0; adapter < NapatechGetNumAdapters(); ++adapter) {
+        flow_stream[adapter] = InitFlowStream(adapter, ntv->stream_id);
     }
+#endif
+
     if (ConfGetBool("napatech.auto-config", &is_autoconfig) == 0) {
         is_autoconfig = 0;
     }
@@ -800,6 +851,10 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
         SC_ATOMIC_ADD(stream_count, 1);
         if (SC_ATOMIC_GET(stream_count) == NapatechGetNumConfiguredStreams()) {
 
+            if (ConfGetBool("napatech.inline", &is_inline) == 0) {
+                is_inline = 0;
+            }
+
 #ifdef NAPATECH_ENABLE_BYPASS
             /* Initialize the port map before we setup traffic filters */
             for (int i = 0; i < MAX_PORTS; ++i) {
@@ -819,9 +874,8 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
                 exit(EXIT_FAILURE);
 
             } else if (status == 0x20000008) {
-                SCLogError(SC_ERR_NAPATECH_STREAMS_REGISTER_FAILED,
-                        "Check napatech.ports in the suricata config file.");
-                exit(EXIT_FAILURE);
+                        FatalError(SC_ERR_FATAL,
+                                   "Check napatech.ports in the suricata config file.");
             }
             RecommendNUMAConfig(SC_LOG_PERF);
             SCLogNotice("Napatech packet input engine started.");
@@ -835,9 +889,8 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
     if (ntv->hba > 0) {
         char *s_hbad_pkt = SCCalloc(1, 32);
         if (unlikely(s_hbad_pkt == NULL)) {
-            SCLogError(SC_ERR_MEM_ALLOC,
-                    "Failed to allocate memory for NAPATECH stream counter.");
-            exit(EXIT_FAILURE);
+                    FatalError(SC_ERR_FATAL,
+                               "Failed to allocate memory for NAPATECH stream counter.");
         }
         snprintf(s_hbad_pkt, 32, "nt%d.hba_drop", ntv->stream_id);
         hba_pkt = StatsRegisterCounter(s_hbad_pkt, tv);
@@ -865,6 +918,9 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
         status = NT_NetRxGet(ntv->rx_stream, &packet_buffer, 1000);
         if (unlikely(
                 status == NT_STATUS_TIMEOUT || status == NT_STATUS_TRYAGAIN)) {
+            if (status == NT_STATUS_TIMEOUT) {
+                TmThreadsCaptureHandleTimeout(tv, NULL);
+            }
             continue;
         } else if (unlikely(status != NT_SUCCESS)) {
             NAPATECH_ERROR(SC_ERR_NAPATECH_OPEN_FAILED, status);
@@ -877,6 +933,8 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
 #ifdef NAPATECH_ENABLE_BYPASS
         p->ntpv.bypass = 0;
 #endif
+
+        p->ntpv.rx_stream = ntv->rx_stream;
 
         if (unlikely(p == NULL)) {
             NT_NetRxRelease(ntv->rx_stream, packet_buffer);
@@ -893,7 +951,7 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
         switch (NT_NET_GET_PKT_TIMESTAMP_TYPE(packet_buffer)) {
             case NT_TIMESTAMP_TYPE_NATIVE_UNIX:
                 p->ts.tv_sec = pkt_ts / 100000000;
-                p->ts.tv_usec = ((pkt_ts % 100000000) / 100) + (pkt_ts % 100) > 50 ? 1 : 0;
+                p->ts.tv_usec = ((pkt_ts % 100000000) / 100) + ((pkt_ts % 100) > 50 ? 1 : 0);
                 break;
             case NT_TIMESTAMP_TYPE_PCAP:
                 p->ts.tv_sec = pkt_ts >> 32;
@@ -901,12 +959,12 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
                 break;
             case NT_TIMESTAMP_TYPE_PCAP_NANOTIME:
                 p->ts.tv_sec = pkt_ts >> 32;
-                p->ts.tv_usec = ((pkt_ts & 0xFFFFFFFF) / 1000) + (pkt_ts % 1000) > 500 ? 1 : 0;
+                p->ts.tv_usec = ((pkt_ts & 0xFFFFFFFF) / 1000) + ((pkt_ts % 1000) > 500 ? 1 : 0);
                 break;
             case NT_TIMESTAMP_TYPE_NATIVE_NDIS:
                 /* number of seconds between 1/1/1601 and 1/1/1970 */
                 p->ts.tv_sec = (pkt_ts / 100000000) - 11644473600;
-                p->ts.tv_usec = ((pkt_ts % 100000000) / 100) + (pkt_ts % 100) > 50 ? 1 : 0;
+                p->ts.tv_usec = ((pkt_ts % 100000000) / 100) + ((pkt_ts % 100) > 50 ? 1 : 0);
                 break;
             default:
                 SCLogError(SC_ERR_NAPATECH_TIMESTAMP_TYPE_NOT_SUPPORTED,
@@ -936,7 +994,10 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
         p->ntpv.dyn3 = _NT_NET_GET_PKT_DESCR_PTR_DYN3(packet_buffer);
         p->BypassPacketsFlow = (NapatechIsBypassSupported() ? NapatechBypassCallback : NULL);
         NT_NET_SET_PKT_TXPORT(packet_buffer, inline_port_map[p->ntpv.dyn3->rxPort]);
+        p->ntpv.flow_stream = flow_stream[NapatechGetAdapter(p->ntpv.dyn3->rxPort)];
+
 #endif
+
         p->ReleasePacket = NapatechReleasePacket;
         p->ntpv.nt_packet_buf = packet_buffer;
         p->ntpv.stream_id = ntv->stream_id;
@@ -953,29 +1014,15 @@ TmEcode NapatechPacketLoop(ThreadVars *tv, void *data, void *slot)
             SCReturnInt(TM_ECODE_FAILED);
         }
 
-        /* Release any packets that were returned by the callback function */
-        Packet *rel_pkt = PacketDequeue(&packets_to_release[ntv->stream_id]);
-        while (rel_pkt != NULL) {
-#ifdef NAPATECH_ENABLE_BYPASS
-            if (rel_pkt->ntpv.bypass == 1) {
-                if (PACKET_TEST_ACTION(p, ACTION_DROP)) {
-                    if (is_inline) {
-                        rel_pkt->ntpv.dyn3->wireLength = 0;
-                    }
-                }
-                ProgramFlow(rel_pkt, is_inline);
-            }
-#endif
-            NT_NetRxRelease(ntv->rx_stream, rel_pkt->ntpv.nt_packet_buf);
-            rel_pkt = PacketDequeue(&packets_to_release[ntv->stream_id]);
-        }
+        /*
+         * At this point the packet and the Napatech Packet Buffer have been returned
+         * to the system in the NapatechReleasePacket() Callback.
+         */
+
         StatsSyncCountersIfSignalled(tv);
     } // while
 
     if (closer) {
-#ifdef NAPATECH_ENABLE_BYPASS
-        NapatechCloseFlowStreams();
-#endif
         NapatechDeleteFilters();
     }
 

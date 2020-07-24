@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -43,14 +43,13 @@
  */
 #define PARSE_REGEX "^\\s*(<|>)?\\s*([0-9]+)\\s*(?:<>\\s*([0-9]+))?\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectITypeMatch(DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectITypeSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectITypeRegisterTests(void);
-void DetectITypeFree(void *);
+void DetectITypeFree(DetectEngineCtx *, void *);
 
 static int PrefilterSetupIType(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
 static bool PrefilterITypeIsPrefilterable(const Signature *s);
@@ -62,7 +61,7 @@ void DetectITypeRegister (void)
 {
     sigmatch_table[DETECT_ITYPE].name = "itype";
     sigmatch_table[DETECT_ITYPE].desc = "match on a specific ICMP type";
-    sigmatch_table[DETECT_ITYPE].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#itype";
+    sigmatch_table[DETECT_ITYPE].url = "/rules/header-keywords.html#itype";
     sigmatch_table[DETECT_ITYPE].Match = DetectITypeMatch;
     sigmatch_table[DETECT_ITYPE].Setup = DetectITypeSetup;
     sigmatch_table[DETECT_ITYPE].Free = DetectITypeFree;
@@ -71,7 +70,7 @@ void DetectITypeRegister (void)
     sigmatch_table[DETECT_ITYPE].SupportsPrefilter = PrefilterITypeIsPrefilterable;
     sigmatch_table[DETECT_ITYPE].SetupPrefilter = PrefilterSetupIType;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 #define DETECT_ITYPE_EQ   PREFILTER_U8HASH_MODE_EQ   /**< "equal" operator */
@@ -139,20 +138,20 @@ static int DetectITypeMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
 /**
  * \brief This function is used to parse itype options passed via itype: keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param itypestr Pointer to the user provided itype options
  *
  * \retval itd pointer to DetectITypeData on success
  * \retval NULL on failure
  */
-static DetectITypeData *DetectITypeParse(const char *itypestr)
+static DetectITypeData *DetectITypeParse(DetectEngineCtx *de_ctx, const char *itypestr)
 {
     DetectITypeData *itd = NULL;
     char *args[3] = {NULL, NULL, NULL};
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, itypestr, strlen(itypestr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, itypestr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1 || ret > 4) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, itypestr);
         goto error;
@@ -184,7 +183,7 @@ static DetectITypeData *DetectITypeParse(const char *itypestr)
             goto error;
         }
         /* we have only a comparison ("<", ">") */
-        if (ByteExtractStringUint8(&itd->type1, 10, 0, args[1]) < 0) {
+        if (StringParseUint8(&itd->type1, 10, 0, args[1]) < 0) {
             SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp type %s is not "
                                                 "valid", args[1]);
             goto error;
@@ -195,12 +194,12 @@ static DetectITypeData *DetectITypeParse(const char *itypestr)
         /* we have a range ("<>") */
         if (args[2] != NULL) {
             itd->mode = (uint8_t) DETECT_ITYPE_RN;
-            if (ByteExtractStringUint8(&itd->type1, 10, 0, args[1]) < 0) {
+            if (StringParseUint8(&itd->type1, 10, 0, args[1]) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp type %s is not "
                                                     "valid", args[1]);
                 goto error;
             }
-            if (ByteExtractStringUint8(&itd->type2, 10, 0, args[2]) < 0) {
+            if (StringParseUint8(&itd->type2, 10, 0, args[2]) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp type %s is not "
                                                     "valid", args[2]);
                 goto error;
@@ -214,7 +213,7 @@ static DetectITypeData *DetectITypeParse(const char *itypestr)
             }
         } else { /* we have an equality */
             itd->mode = DETECT_ITYPE_EQ;
-            if (ByteExtractStringUint8(&itd->type1, 10, 0, args[1]) < 0) {
+            if (StringParseUint8(&itd->type1, 10, 0, args[1]) < 0) {
                 SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp type %s is not "
                                                     "valid", args[1]);
                 goto error;
@@ -234,7 +233,7 @@ error:
             SCFree(args[i]);
     }
     if (itd != NULL)
-        DetectITypeFree(itd);
+        DetectITypeFree(de_ctx, itd);
     return NULL;
 }
 
@@ -254,7 +253,7 @@ static int DetectITypeSetup(DetectEngineCtx *de_ctx, Signature *s, const char *i
     DetectITypeData *itd = NULL;
     SigMatch *sm = NULL;
 
-    itd = DetectITypeParse(itypestr);
+    itd = DetectITypeParse(de_ctx, itypestr);
     if (itd == NULL) goto error;
 
     sm = SigMatchAlloc();
@@ -269,7 +268,7 @@ static int DetectITypeSetup(DetectEngineCtx *de_ctx, Signature *s, const char *i
     return 0;
 
 error:
-    if (itd != NULL) DetectITypeFree(itd);
+    if (itd != NULL) DetectITypeFree(de_ctx, itd);
     if (sm != NULL) SCFree(sm);
     return -1;
 }
@@ -279,7 +278,7 @@ error:
  *
  * \param ptr pointer to DetectITypeData
  */
-void DetectITypeFree(void *ptr)
+void DetectITypeFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectITypeData *itd = (DetectITypeData *)ptr;
     SCFree(itd);
@@ -367,11 +366,11 @@ static int DetectITypeParseTest01(void)
 {
     DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("8");
+    itd = DetectITypeParse(NULL, "8");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->mode == DETECT_ITYPE_EQ)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -384,11 +383,11 @@ static int DetectITypeParseTest02(void)
 {
 DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse(">8");
+    itd = DetectITypeParse(NULL, ">8");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->mode == DETECT_ITYPE_GT)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -401,11 +400,11 @@ static int DetectITypeParseTest03(void)
 {
     DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("<8");
+    itd = DetectITypeParse(NULL, "<8");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->mode == DETECT_ITYPE_LT)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -418,11 +417,11 @@ static int DetectITypeParseTest04(void)
 {
 DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("8<>20");
+    itd = DetectITypeParse(NULL, "8<>20");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->type2 == 20 && itd->mode == DETECT_ITYPE_RN)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -435,11 +434,11 @@ static int DetectITypeParseTest05(void)
 {
 DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("   8 ");
+    itd = DetectITypeParse(NULL, "   8 ");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->mode == DETECT_ITYPE_EQ)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -452,11 +451,11 @@ static int DetectITypeParseTest06(void)
 {
 DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("  >  8  ");
+    itd = DetectITypeParse(NULL, "  >  8  ");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->mode == DETECT_ITYPE_GT)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -469,11 +468,11 @@ static int DetectITypeParseTest07(void)
 {
 DetectITypeData *itd = NULL;
     int result = 0;
-    itd = DetectITypeParse("  8  <> 20  ");
+    itd = DetectITypeParse(NULL, "  8  <> 20  ");
     if (itd != NULL) {
         if (itd->type1 == 8 && itd->type2 == 20 && itd->mode == DETECT_ITYPE_RN)
             result = 1;
-        DetectITypeFree(itd);
+        DetectITypeFree(NULL, itd);
     }
     return result;
 }
@@ -484,10 +483,10 @@ DetectITypeData *itd = NULL;
 static int DetectITypeParseTest08(void)
 {
     DetectITypeData *itd = NULL;
-    itd = DetectITypeParse("> 8 <> 20");
+    itd = DetectITypeParse(NULL, "> 8 <> 20");
     if (itd == NULL)
         return 1;
-    DetectITypeFree(itd);
+    DetectITypeFree(NULL, itd);
     return 0;
 }
 

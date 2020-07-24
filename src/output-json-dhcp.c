@@ -42,7 +42,6 @@
 #include "app-layer.h"
 #include "app-layer-parser.h"
 
-#include "app-layer-dhcp.h"
 #include "output-json-dhcp.h"
 #include "rust.h"
 
@@ -51,6 +50,7 @@ typedef struct LogDHCPFileCtx_ {
     LogFileCtx *file_ctx;
     uint32_t    flags;
     void       *rs_logger;
+    OutputJsonCommonSettings cfg;
 } LogDHCPFileCtx;
 
 typedef struct LogDHCPLogThread_ {
@@ -65,25 +65,24 @@ static int JsonDHCPLogger(ThreadVars *tv, void *thread_data,
     LogDHCPLogThread *thread = thread_data;
     LogDHCPFileCtx *ctx = thread->dhcplog_ctx;
 
-    json_t *js = CreateJSONHeader((Packet *)p, 0, "dhcp");
+    if (!rs_dhcp_logger_do_log(ctx->rs_logger, tx)) {
+        return TM_ECODE_OK;
+    }
+
+    JsonBuilder *js = CreateEveHeader((Packet *)p, 0, "dhcp", NULL);
     if (unlikely(js == NULL)) {
         return TM_ECODE_FAILED;
     }
 
-    json_t *dhcp_js = rs_dhcp_logger_log(ctx->rs_logger, tx);
-    if (unlikely(dhcp_js == NULL)) {
-        goto skip;
-    }
-    json_object_set_new(js, "dhcp", dhcp_js);
+    EveAddCommonOptions(&thread->dhcplog_ctx->cfg, p, f, js);
 
+    rs_dhcp_logger_log(ctx->rs_logger, tx, js);
+
+    EveAddCommonOptions(&thread->dhcplog_ctx->cfg, p, f, js);
     MemBufferReset(thread->buffer);
-    OutputJSONBuffer(js, thread->dhcplog_ctx->file_ctx, &thread->buffer);
-    json_decref(js);
+    OutputJsonBuilderBuffer(js, thread->dhcplog_ctx->file_ctx, &thread->buffer);
+    jb_free(js);
 
-    return TM_ECODE_OK;
-
-skip:
-    json_decref(js);
     return TM_ECODE_OK;
 }
 
@@ -106,6 +105,7 @@ static OutputInitResult OutputDHCPLogInitSub(ConfNode *conf,
         return result;
     }
     dhcplog_ctx->file_ctx = ajt->file_ctx;
+    dhcplog_ctx->cfg = ajt->cfg;
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(*output_ctx));
     if (unlikely(output_ctx == NULL)) {

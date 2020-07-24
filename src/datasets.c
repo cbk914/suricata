@@ -1,4 +1,4 @@
-/* Copyright (C) 2017-2019 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -32,6 +32,7 @@
 #include "util-print.h"
 #include "util-crypt.h"     // encode base64
 #include "util-base64.h"    // decode base64
+#include "util-byte.h"
 
 SCMutex sets_lock = SCMUTEX_INITIALIZER;
 static Dataset *sets = NULL;
@@ -40,6 +41,12 @@ static bool experimental_warning = false;
 
 static int DatasetAddwRep(Dataset *set, const uint8_t *data, const uint32_t data_len,
         DataRepType *rep);
+
+static inline void DatasetUnlockData(THashData *d)
+{
+    (void) THashDecrUsecnt(d);
+    THashDataUnlock(d);
+}
 
 enum DatasetTypes DatasetGetTypeFromString(const char *s)
 {
@@ -132,12 +139,14 @@ static int ParseRepLine(const char *in, size_t ins, DataRepType *rep_out)
         return -1;
     }
 
-    int v = atoi(ptrs[0]);
-    if (v < 0 || v > USHRT_MAX) {
-        SCLogDebug("v %d", v);
+    uint16_t v = 0;
+    int r = StringParseU16RangeCheck(&v, 10, strlen(ptrs[0]), ptrs[0], 0, USHRT_MAX);
+    if (r != (int)strlen(ptrs[0])) {
+        SCLogError(SC_ERR_INVALID_NUMERIC_VALUE,
+                "'%s' is not a valid reputation value (0-65535)", ptrs[0]);
         return -1;
     }
-    SCLogDebug("v %d raw %s", v, ptrs[0]);
+    SCLogDebug("v %"PRIu16" raw %s", v, ptrs[0]);
 
     rep_out->value = v;
     return 0;
@@ -306,6 +315,7 @@ static int DatasetLoadString(Dataset *set)
             line[strlen(line) - 1] = '\0';
             SCLogDebug("line: '%s'", line);
 
+            // coverity[alloc_strlen : FALSE]
             uint8_t decoded[strlen(line)];
             uint32_t len = DecodeBase64(decoded, (const uint8_t *)line, strlen(line), 1);
             if (len == 0)
@@ -322,6 +332,7 @@ static int DatasetLoadString(Dataset *set)
 
             *r = '\0';
 
+            // coverity[alloc_strlen : FALSE]
             uint8_t decoded[strlen(line)];
             uint32_t len = DecodeBase64(decoded, (const uint8_t *)line, strlen(line), 1);
             if (len == 0)
@@ -362,7 +373,6 @@ static void DatasetGetPath(const char *in_path,
 {
     char path[PATH_MAX];
     struct stat st;
-    int ret;
 
     if (PathIsAbsolute(in_path)) {
         strlcpy(path, in_path, sizeof(path));
@@ -371,7 +381,7 @@ static void DatasetGetPath(const char *in_path,
     }
 
     const char *data_dir = ConfigGetDataDirectory();
-    if ((ret = stat(data_dir, &st)) != 0) {
+    if (stat(data_dir, &st) != 0) {
         SCLogDebug("data-dir '%s': %s", data_dir, strerror(errno));
         return;
     }
@@ -379,7 +389,7 @@ static void DatasetGetPath(const char *in_path,
     snprintf(path, sizeof(path), "%s/%s", data_dir, in_path); // TODO WINDOWS
 
     if (type == TYPE_LOAD) {
-        if ((ret = stat(path, &st)) != 0) {
+        if (stat(path, &st) != 0) {
             SCLogDebug("path %s: %s", path, strerror(errno));
             if (!g_system) {
                 snprintf(path, sizeof(path), "%s", in_path);
@@ -717,7 +727,7 @@ static DataRepResultType DatasetLookupStringwRep(Dataset *set,
         StringType *found = rdata->data;
         rrep.found = true;
         rrep.rep = found->rep;
-        THashDataUnlock(rdata);
+        DatasetUnlockData(rdata);
         return rrep;
     }
     return rrep;
@@ -735,7 +745,7 @@ static int DatasetLookupMd5(Dataset *set, const uint8_t *data, const uint32_t da
     memcpy(lookup.md5, data, data_len);
     THashData *rdata = THashLookupFromHash(set->hash, &lookup);
     if (rdata) {
-        THashDataUnlock(rdata);
+        DatasetUnlockData(rdata);
         return 1;
     }
     return 0;
@@ -759,7 +769,7 @@ static DataRepResultType DatasetLookupMd5wRep(Dataset *set,
         Md5Type *found = rdata->data;
         rrep.found = true;
         rrep.rep = found->rep;
-        THashDataUnlock(rdata);
+        DatasetUnlockData(rdata);
         return rrep;
     }
     return rrep;
@@ -777,7 +787,7 @@ static int DatasetLookupSha256(Dataset *set, const uint8_t *data, const uint32_t
     memcpy(lookup.sha256, data, data_len);
     THashData *rdata = THashLookupFromHash(set->hash, &lookup);
     if (rdata) {
-        THashDataUnlock(rdata);
+        DatasetUnlockData(rdata);
         return 1;
     }
     return 0;
@@ -801,7 +811,7 @@ static DataRepResultType DatasetLookupSha256wRep(Dataset *set,
         Sha256Type *found = rdata->data;
         rrep.found = true;
         rrep.rep = found->rep;
-        THashDataUnlock(rdata);
+        DatasetUnlockData(rdata);
         return rrep;
     }
     return rrep;
@@ -864,7 +874,7 @@ static int DatasetAddString(Dataset *set, const uint8_t *data, const uint32_t da
         .rep.value = 0 };
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -885,7 +895,7 @@ static int DatasetAddStringwRep(Dataset *set, const uint8_t *data, const uint32_
         .rep = *rep };
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -897,13 +907,13 @@ static int DatasetAddMd5(Dataset *set, const uint8_t *data, const uint32_t data_
         return -1;
 
     if (data_len != 16)
-        return -1;
+        return -2;
 
     Md5Type lookup = { .rep.value = 0 };
     memcpy(lookup.md5, data, 16);
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -916,13 +926,13 @@ static int DatasetAddMd5wRep(Dataset *set, const uint8_t *data, const uint32_t d
         return -1;
 
     if (data_len != 16)
-        return -1;
+        return -2;
 
     Md5Type lookup = { .rep = *rep };
     memcpy(lookup.md5, data, 16);
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -935,13 +945,13 @@ static int DatasetAddSha256wRep(Dataset *set, const uint8_t *data, const uint32_
         return -1;
 
     if (data_len != 32)
-        return 0;
+        return -2;
 
     Sha256Type lookup = { .rep = *rep };
     memcpy(lookup.sha256, data, 32);
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -953,13 +963,13 @@ static int DatasetAddSha256(Dataset *set, const uint8_t *data, const uint32_t da
         return -1;
 
     if (data_len != 32)
-        return 0;
+        return -2;
 
     Sha256Type lookup = { .rep.value = 0 };
     memcpy(lookup.sha256, data, 32);
     struct THashDataGetResult res = THashGetFromHash(set->hash, &lookup);
     if (res.data) {
-        THashDataUnlock(res.data);
+        DatasetUnlockData(res.data);
         return res.is_new ? 1 : 0;
     }
     return -1;
@@ -998,7 +1008,12 @@ static int DatasetAddwRep(Dataset *set, const uint8_t *data, const uint32_t data
     return -1;
 }
 
-/** \brief add serialized data to set */
+/** \brief add serialized data to set
+ *  \retval int 1 added
+ *  \retval int 0 already in hash
+ *  \retval int -1 API error (not added)
+ *  \retval int -2 DATA error
+ */
 int DatasetAddSerialized(Dataset *set, const char *string)
 {
     if (set == NULL)
@@ -1006,29 +1021,112 @@ int DatasetAddSerialized(Dataset *set, const char *string)
 
     switch (set->type) {
         case DATASET_TYPE_STRING: {
+            // coverity[alloc_strlen : FALSE]
             uint8_t decoded[strlen(string)];
             uint32_t len = DecodeBase64(decoded, (const uint8_t *)string, strlen(string), 1);
             if (len == 0) {
-                return -1;
+                return -2;
             }
 
             return DatasetAddString(set, decoded, len);
         }
         case DATASET_TYPE_MD5: {
             if (strlen(string) != 32)
-                return -1;
+                return -2;
             uint8_t hash[16];
             if (HexToRaw((const uint8_t *)string, 32, hash, sizeof(hash)) < 0)
-                return -1;
+                return -2;
             return DatasetAddMd5(set, hash, 16);
         }
         case DATASET_TYPE_SHA256: {
             if (strlen(string) != 64)
-                return -1;
+                return -2;
             uint8_t hash[32];
             if (HexToRaw((const uint8_t *)string, 64, hash, sizeof(hash)) < 0)
-                return -1;
+                return -2;
             return DatasetAddSha256(set, hash, 32);
+        }
+    }
+    return -1;
+}
+
+/**
+ *  \retval 1 data was removed from the hash
+ *  \retval 0 data not removed (busy)
+ *  \retval -1 data not found
+ */
+static int DatasetRemoveString(Dataset *set, const uint8_t *data, const uint32_t data_len)
+{
+    if (set == NULL)
+        return -1;
+
+    StringType lookup = { .ptr = (uint8_t *)data, .len = data_len,
+        .rep.value = 0 };
+    return THashRemoveFromHash(set->hash, &lookup);
+}
+
+static int DatasetRemoveMd5(Dataset *set, const uint8_t *data, const uint32_t data_len)
+{
+    if (set == NULL)
+        return -1;
+
+    if (data_len != 16)
+        return -2;
+
+    Md5Type lookup = { .rep.value = 0 };
+    memcpy(lookup.md5, data, 16);
+    return THashRemoveFromHash(set->hash, &lookup);
+}
+
+static int DatasetRemoveSha256(Dataset *set, const uint8_t *data, const uint32_t data_len)
+{
+    if (set == NULL)
+        return -1;
+
+    if (data_len != 32)
+        return -2;
+
+    Sha256Type lookup = { .rep.value = 0 };
+    memcpy(lookup.sha256, data, 32);
+    return THashRemoveFromHash(set->hash, &lookup);
+}
+
+/** \brief remove serialized data from set
+ *  \retval int 1 removed
+ *  \retval int 0 found but busy (not removed)
+ *  \retval int -1 API error (not removed)
+ *  \retval int -2 DATA error */
+int DatasetRemoveSerialized(Dataset *set, const char *string)
+{
+    if (set == NULL)
+        return -1;
+
+    switch (set->type) {
+        case DATASET_TYPE_STRING: {
+            // coverity[alloc_strlen : FALSE]
+            uint8_t decoded[strlen(string)];
+            uint32_t len = DecodeBase64(decoded, (const uint8_t *)string, strlen(string), 1);
+            if (len == 0) {
+                return -2;
+            }
+
+            return DatasetRemoveString(set, decoded, len);
+        }
+        case DATASET_TYPE_MD5: {
+            if (strlen(string) != 32)
+                return -2;
+            uint8_t hash[16];
+            if (HexToRaw((const uint8_t *)string, 32, hash, sizeof(hash)) < 0)
+                return -2;
+            return DatasetRemoveMd5(set, hash, 16);
+        }
+        case DATASET_TYPE_SHA256: {
+            if (strlen(string) != 64)
+                return -2;
+            uint8_t hash[32];
+            if (HexToRaw((const uint8_t *)string, 64, hash, sizeof(hash)) < 0)
+                return -2;
+            return DatasetRemoveSha256(set, hash, 32);
         }
     }
     return -1;

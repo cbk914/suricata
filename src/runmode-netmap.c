@@ -51,6 +51,7 @@
 #include "util-device.h"
 #include "util-runmodes.h"
 #include "util-ioctl.h"
+#include "util-byte.h"
 
 #include "source-netmap.h"
 
@@ -84,7 +85,7 @@ static void NetmapDerefConfig(void *conf)
 {
     NetmapIfaceConfig *pfp = (NetmapIfaceConfig *)conf;
     /* config is used only once but cost of this low. */
-    if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
+    if (SC_ATOMIC_SUB(pfp->ref, 1) == 1) {
         SCFree(pfp);
     }
 }
@@ -148,7 +149,11 @@ static int ParseNetmapSettings(NetmapIfaceSettings *ns, const char *iface,
             ns->threads = 0;
             ns->threads_auto = true;
         } else {
-            ns->threads = atoi(threadsstr);
+            if (StringParseUint16(&ns->threads, 10, 0, threadsstr) < 0) {
+                SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid config value for "
+                             "threads: %s, resetting to 0", threadsstr);
+                ns->threads = 0;
+            }
         }
     }
 
@@ -418,8 +423,7 @@ int RunModeIdsNetmapAutoFp(void)
                               "DecodeNetmap", thread_name_autofp,
                               live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     SCLogDebug("RunModeIdsNetmapAutoFp initialised");
@@ -451,8 +455,7 @@ int RunModeIdsNetmapSingle(void)
                                     "DecodeNetmap", thread_name_single,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     SCLogDebug("RunModeIdsNetmapSingle initialised");
@@ -487,8 +490,7 @@ int RunModeIdsNetmapWorkers(void)
                                     "DecodeNetmap", thread_name_workers,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     SCLogDebug("RunModeIdsNetmapWorkers initialised");

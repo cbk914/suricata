@@ -1,4 +1,4 @@
-/* Copyright (C) 2017 Open Information Security Foundation
+/* Copyright (C) 2017-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -96,7 +96,7 @@ static AppProto TFTPProbingParser(Flow *f, uint8_t direction,
     return ALPROTO_UNKNOWN;
 }
 
-static int TFTPParseRequest(Flow *f, void *state,
+static AppLayerResult TFTPParseRequest(Flow *f, void *state,
     AppLayerParserState *pstate, const uint8_t *input, uint32_t input_len,
     void *local_data, const uint8_t flags)
 {
@@ -105,26 +105,30 @@ static int TFTPParseRequest(Flow *f, void *state,
     /* Likely connection closed, we can just return here. */
     if ((input == NULL || input_len == 0) &&
         AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Probably don't want to create a transaction in this case
      * either. */
     if (input == NULL || input_len == 0) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
-    return rs_tftp_request(state, input, input_len);
+    int res = rs_tftp_request(state, input, input_len);
+    if (res < 0) {
+        SCReturnStruct(APP_LAYER_ERROR);
+    }
+    SCReturnStruct(APP_LAYER_OK);
 }
 
 /**
  * \brief Response parsing is not implemented
  */
-static int TFTPParseResponse(Flow *f, void *state, AppLayerParserState *pstate,
+static AppLayerResult TFTPParseResponse(Flow *f, void *state, AppLayerParserState *pstate,
     const uint8_t *input, uint32_t input_len, void *local_data,
     const uint8_t flags)
 {
-    return 0;
+    SCReturnStruct(APP_LAYER_OK);
 }
 
 static uint64_t TFTPGetTxCnt(void *state)
@@ -135,16 +139,6 @@ static uint64_t TFTPGetTxCnt(void *state)
 static void *TFTPGetTx(void *state, uint64_t tx_id)
 {
     return rs_tftp_get_tx(state, tx_id);
-}
-
-static void TFTPSetTxLogged(void *state, void *vtx, uint32_t logger)
-{
-    rs_tftp_set_tx_logged(state, vtx, logger);
-}
-
-static LoggerId TFTPGetTxLogged(void *state, void *vtx)
-{
-    return rs_tftp_get_tx_logged(state, vtx);
 }
 
 /**
@@ -245,9 +239,6 @@ void RegisterTFTPParsers(void)
         AppLayerParserRegisterTxFreeFunc(IPPROTO_UDP, ALPROTO_TFTP,
                                          TFTPStateTxFree);
 
-        AppLayerParserRegisterLoggerFuncs(IPPROTO_UDP, ALPROTO_TFTP,
-                                          TFTPGetTxLogged, TFTPSetTxLogged);
-
         /* Register a function to return the current transaction count. */
         AppLayerParserRegisterGetTxCnt(IPPROTO_UDP, ALPROTO_TFTP,
                                        TFTPGetTxCnt);
@@ -270,6 +261,9 @@ void RegisterTFTPParsers(void)
                                            TFTPStateGetEventInfo);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_UDP, ALPROTO_TFTP,
                                             TFTPGetEvents);
+
+        AppLayerParserRegisterTxDataFunc(IPPROTO_UDP, ALPROTO_TFTP,
+                                         rs_tftp_get_tx_data);
     }
     else {
         SCLogDebug("TFTP protocol parsing disabled.");

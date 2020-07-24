@@ -56,7 +56,7 @@ void DetectContentRegister (void)
 {
     sigmatch_table[DETECT_CONTENT].name = "content";
     sigmatch_table[DETECT_CONTENT].desc = "match on payload content";
-    sigmatch_table[DETECT_CONTENT].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#content";
+    sigmatch_table[DETECT_CONTENT].url = "/rules/payload-keywords.html#content";
     sigmatch_table[DETECT_CONTENT].Match = NULL;
     sigmatch_table[DETECT_CONTENT].Setup = DetectContentSetup;
     sigmatch_table[DETECT_CONTENT].Free  = DetectContentFree;
@@ -335,6 +335,17 @@ int DetectContentSetup(DetectEngineCtx *de_ctx, Signature *s, const char *conten
     int sm_list = s->init_data->list;
     if (sm_list == DETECT_SM_LIST_NOTSET) {
         sm_list = DETECT_SM_LIST_PMATCH;
+    } else if (sm_list > DETECT_SM_LIST_MAX &&
+            0 == (cd->flags & DETECT_CONTENT_NEGATED)) {
+        /* Check transform compatibility */
+        const char *tstr;
+        if (!DetectBufferTypeValidateTransform(de_ctx, sm_list, cd->content,
+                    cd->content_len, &tstr)) {
+            SCLogError(SC_ERR_INVALID_SIGNATURE,
+                    "content string \"%s\" incompatible with %s transform",
+                    contentstr, tstr);
+            goto error;
+        }
     }
 
     sm = SigMatchAlloc();
@@ -347,7 +358,7 @@ int DetectContentSetup(DetectEngineCtx *de_ctx, Signature *s, const char *conten
     return 0;
 
 error:
-    DetectContentFree(cd);
+    DetectContentFree(de_ctx, cd);
     return -1;
 }
 
@@ -356,7 +367,7 @@ error:
  *
  * \param cd pointer to DetectContentData
  */
-void DetectContentFree(void *ptr)
+void DetectContentFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     SCEnter();
     DetectContentData *cd = (DetectContentData *)ptr;
@@ -753,7 +764,7 @@ static int DetectContentParseTest01 (void)
             PrintRawUriFp(stdout,cd->content,cd->content_len);
             SCLogDebug(": ");
             result = 0;
-            DetectContentFree(cd);
+            DetectContentFree(NULL, cd);
         }
     } else {
         SCLogDebug("expected %s got NULL: ", teststringparsed);
@@ -784,7 +795,7 @@ static int DetectContentParseTest02 (void)
             PrintRawUriFp(stdout,cd->content,cd->content_len);
             SCLogDebug(": ");
             result = 0;
-            DetectContentFree(cd);
+            DetectContentFree(NULL, cd);
         }
     } else {
         SCLogDebug("expected %s got NULL: ", teststringparsed);
@@ -815,7 +826,7 @@ static int DetectContentParseTest03 (void)
             PrintRawUriFp(stdout,cd->content,cd->content_len);
             SCLogDebug(": ");
             result = 0;
-            DetectContentFree(cd);
+            DetectContentFree(NULL, cd);
         }
     } else {
         SCLogDebug("expected %s got NULL: ", teststringparsed);
@@ -847,7 +858,7 @@ static int DetectContentParseTest04 (void)
             PrintRawUriFp(stdout,cd->content,cd->content_len);
             SCLogDebug(": ");
             result = 0;
-            DetectContentFree(cd);
+            DetectContentFree(NULL, cd);
         }
     } else {
         SCLogDebug("expected %s got NULL: ", teststringparsed);
@@ -876,7 +887,7 @@ static int DetectContentParseTest05 (void)
         PrintRawUriFp(stdout,cd->content,cd->content_len);
         SCLogDebug(": ");
         result = 0;
-        DetectContentFree(cd);
+        DetectContentFree(NULL, cd);
     }
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     return result;
@@ -904,7 +915,7 @@ static int DetectContentParseTest06 (void)
             PrintRawUriFp(stdout,cd->content,cd->content_len);
             SCLogDebug(": ");
             result = 0;
-            DetectContentFree(cd);
+            DetectContentFree(NULL, cd);
         }
     } else {
         SCLogDebug("expected %s got NULL: ", teststringparsed);
@@ -931,7 +942,7 @@ static int DetectContentParseTest07 (void)
     if (cd != NULL) {
         SCLogDebug("expected NULL got %p: ", cd);
         result = 0;
-        DetectContentFree(cd);
+        DetectContentFree(NULL, cd);
     }
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     return result;
@@ -954,7 +965,7 @@ static int DetectContentParseTest08 (void)
     if (cd != NULL) {
         SCLogDebug("expected NULL got %p: ", cd);
         result = 0;
-        DetectContentFree(cd);
+        DetectContentFree(NULL, cd);
     }
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     return result;
@@ -1241,7 +1252,7 @@ static int DetectContentParseTest09(void)
 
     cd = DetectContentParse(spm_global_thread_ctx, teststring);
     FAIL_IF_NULL(cd);
-    DetectContentFree(cd);
+    DetectContentFree(NULL, cd);
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     PASS;
 }
@@ -1292,7 +1303,7 @@ static int DetectContentParseTest18(void)
     result &= (DetectContentSetup(de_ctx, s, "one") == 0);
     result &= (s->sm_lists[g_dce_stub_data_buffer_id] == NULL && s->sm_lists[DETECT_SM_LIST_PMATCH] != NULL);
 
-    SigFree(s);
+    SigFree(de_ctx, s);
 
     s = SigAlloc();
     if (s == NULL)
@@ -1302,7 +1313,7 @@ static int DetectContentParseTest18(void)
     result &= (s->sm_lists[g_dce_stub_data_buffer_id] == NULL && s->sm_lists[DETECT_SM_LIST_PMATCH] != NULL);
 
  end:
-    SigFree(s);
+    SigFree(de_ctx, s);
     DetectEngineCtxFree(de_ctx);
 
     return result;
@@ -2332,7 +2343,7 @@ static int DetectContentParseTest41(void)
 
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     SCFree(teststring);
-    DetectContentFree(cd);
+    DetectContentFree(NULL, cd);
     return result;
 }
 
@@ -2365,7 +2376,7 @@ static int DetectContentParseTest42(void)
 
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     SCFree(teststring);
-    DetectContentFree(cd);
+    DetectContentFree(NULL, cd);
     return result;
 }
 
@@ -2399,7 +2410,7 @@ static int DetectContentParseTest43(void)
 
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     SCFree(teststring);
-    DetectContentFree(cd);
+    DetectContentFree(NULL, cd);
     return result;
 }
 
@@ -2436,7 +2447,7 @@ static int DetectContentParseTest44(void)
 
     SpmDestroyGlobalThreadCtx(spm_global_thread_ctx);
     SCFree(teststring);
-    DetectContentFree(cd);
+    DetectContentFree(NULL, cd);
     return result;
 }
 

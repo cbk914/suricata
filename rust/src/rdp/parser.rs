@@ -26,12 +26,13 @@
 //! * x.224-spec: <https://www.itu.int/rec/T-REC-X.224-199511-I/en>
 //! * x.691-spec: <https://www.itu.int/rec/T-REC-X.691/en>
 
-use nom::{be_u16, be_u8, le_u16, le_u32, le_u8, ErrorKind, IResult};
-use crate::rdp::error::RDP_NOT_X224_CLASS_0_ERROR;
-use crate::rdp::util::{
-    le_slice_to_string, parse_per_length_determinant, utf7_slice_to_string,
-};
+use crate::rdp::error::RdpError;
+use crate::rdp::util::{le_slice_to_string, parse_per_length_determinant, utf7_slice_to_string};
 use crate::rdp::windows;
+use nom::bytes::streaming::take;
+use nom::combinator::{map_opt, map_res, opt};
+use nom::number::streaming::{be_u16, be_u8, le_u16, le_u32, le_u8};
+use nom::IResult;
 
 /// constrains dimension to a range, per spec
 /// rdp-spec, section 2.2.1.3.2 Client Core Data
@@ -431,9 +432,8 @@ pub struct McsConnectResponse {}
 
 /// parser for t.123 and children
 /// t.123-spec, section 8
-pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt> {
-    let (i1, _version) =
-        verify!(input, be_u8, |x| x == TpktVersion::T123 as u8)?;
+pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt, RdpError> {
+    let (i1, _version) = verify!(input, be_u8, |&x| x == TpktVersion::T123 as u8)?;
     let (i2, _reserved) = try_parse!(i1, be_u8);
     // less u8, u8, u16
     let (i3, sz) = map_opt!(i2, be_u16, |x: u16| x.checked_sub(4))?;
@@ -478,30 +478,30 @@ pub fn parse_t123_tpkt(input: &[u8]) -> IResult<&[u8], T123Tpkt> {
     return Ok((i4, T123Tpkt { child }));
 }
 
+fn take_4_4_bits(input: &[u8]) -> IResult<&[u8], (u8, u8), RdpError> {
+    map!(input, be_u8, |b| (b >> 4, b & 0xf))
+}
+
 /// rdp-spec, section 2.2.1.1
-fn parse_x224_connection_request(
-    input: &[u8],
-) -> IResult<&[u8], X224ConnectionRequest> {
-    let (i1, length) = verify!(input, be_u8, |x| x != 0xff)?; // 0xff is reserved
-    let (i2, cr_cdt) = bits!(
-        i1,
-        tuple!(
-            verify!(take_bits!(u8, 4), |x| x
-                == X224Type::ConnectionRequest as u8),
-            verify!(take_bits!(u8, 4), |x| x == 0 || x == 1)
-        )
-    )?;
-    let (i3, dst_ref) = verify!(i2, be_u16, |x| x == 0)?;
+fn parse_x224_connection_request(input: &[u8]) -> IResult<&[u8], X224ConnectionRequest, RdpError> {
+    let (i1, length) = verify!(input, be_u8, |&x| x != 0xff)?; // 0xff is reserved
+    let (i2, cr_cdt) = take_4_4_bits(i1)?;
+    let _ = verify!(i1, value!(cr_cdt.0), |&x| x
+        == X224Type::ConnectionRequest as u8)?;
+    let _ = verify!(i1, value!(cr_cdt.1), |&x| x == 0 || x == 1)?;
+    let (i3, dst_ref) = verify!(i2, be_u16, |&x| x == 0)?;
     let (i4, src_ref) = try_parse!(i3, be_u16);
     let (i5, class_options) = bits!(
         i4,
         tuple!(
-            verify!(take_bits!(u8, 4), |x| x <= 4),
-            verify!(take_bits!(u8, 4), |x| x <= 3)
+            verify!(take_bits!(4u8), |&x| x <= 4),
+            verify!(take_bits!(4u8), |&x| x <= 3)
         )
     )?;
     // less cr_cdt (u8), dst_ref (u16), src_ref (u16), class_options (u8)
-    let (i6, sz) = expr_opt!(i5, length.checked_sub(6))?;
+    let _ = verify!(i1, value!(length), |&x| x >= 6)?;
+    let i6 = i5;
+    let sz = length - 6;
 
     //
     // optionally find cookie and/or negotiation request
@@ -556,28 +556,21 @@ fn parse_x224_connection_request(
 /// "An X.224 Class 0 Connection Request TPDU, as specified in [X224] section 13.3."
 fn parse_x224_connection_request_class_0(
     input: &[u8],
-) -> IResult<&[u8], X224ConnectionRequest> {
+) -> IResult<&[u8], X224ConnectionRequest, RdpError> {
     let (i1, x224) = try_parse!(input, parse_x224_connection_request);
     if x224.class == 0 && x224.options == 0 {
         Ok((i1, x224))
     } else {
-        Err(nom::Err::Error(error_position!(
-            input,
-            ErrorKind::Custom(RDP_NOT_X224_CLASS_0_ERROR)
-        )))
+        Err(nom::Err::Error(RdpError::NotX224Class0Error))
     }
 }
 
 // rdp-spec, section 2.2.1.1.1
-fn parse_rdp_cookie(input: &[u8]) -> IResult<&[u8], RdpCookie> {
+fn parse_rdp_cookie(input: &[u8]) -> IResult<&[u8], RdpCookie, RdpError> {
     do_parse! {
         input,
-        _key: verify!(
-            take!(8),
-            |x| x == b"Cookie: ")
-        >> _name: verify!(
-            take!(9),
-            |x| x == b"mstshash=")
+        _key: tag!(b"Cookie: ")
+        >> _name: tag!(b"mstshash=")
         >> bytes: take_until_and_consume!("\r\n")
         >> s: map_res!(value!(bytes), std::str::from_utf8)
         >> (RdpCookie{ mstshash: String::from(s) })
@@ -585,21 +578,19 @@ fn parse_rdp_cookie(input: &[u8]) -> IResult<&[u8], RdpCookie> {
 }
 
 // rdp-spec, section 2.2.1.1.1
-fn parse_negotiation_request(
-    input: &[u8],
-) -> IResult<&[u8], NegotiationRequest> {
+fn parse_negotiation_request(input: &[u8]) -> IResult<&[u8], NegotiationRequest, RdpError> {
     do_parse! {
         input,
         _typ: verify!(
             le_u8,
-            |x| x == X224ConnectionRequestType::NegotiationRequest as u8)
+            |&x| x == X224ConnectionRequestType::NegotiationRequest as u8)
         >> flags: map_opt!(
             le_u8,
             NegotiationRequestFlags::from_bits)
         // u8, u8, u16, and u32 give _length of 8
         >> _length: verify!(
             le_u16,
-            |x| x == 8)
+            |&x| x == 8)
         >> protocols: map_opt!(
             le_u32,
             ProtocolFlags::from_bits)
@@ -609,30 +600,26 @@ fn parse_negotiation_request(
 
 /// rdp-spec, section 2.2.1.2
 /// x.224-spec, section 13.3
-fn parse_x224_connection_confirm(
-    input: &[u8],
-) -> IResult<&[u8], X224ConnectionConfirm> {
-    let (i1, length) = verify!(input, be_u8, |x| x != 0xff)?; // 0xff is reserved
-    let (i2, cr_cdt) = bits!(
-        i1,
-        tuple!(
-            verify!(take_bits!(u8, 4), |x| x
-                == X224Type::ConnectionConfirm as u8),
-            verify!(take_bits!(u8, 4), |x| x == 0 || x == 1)
-        )
-    )?;
-    let (i3, dst_ref) = verify!(i2, be_u16, |x| x == 0)?;
+fn parse_x224_connection_confirm(input: &[u8]) -> IResult<&[u8], X224ConnectionConfirm, RdpError> {
+    let (i1, length) = verify!(input, be_u8, |&x| x != 0xff)?; // 0xff is reserved
+    let (i2, cr_cdt) = take_4_4_bits(input)?;
+    let _ = verify!(i1, value!(cr_cdt.0), |&x| x
+        == X224Type::ConnectionConfirm as u8)?;
+    let _ = verify!(i1, value!(cr_cdt.1), |&x| x == 0 || x == 1)?;
+    let (i3, dst_ref) = verify!(i2, be_u16, |&x| x == 0)?;
     let (i4, src_ref) = try_parse!(i3, be_u16);
     let (i5, class_options) = bits!(
         i4,
         tuple!(
-            verify!(take_bits!(u8, 4), |x| x <= 4),
-            verify!(take_bits!(u8, 4), |x| x <= 3)
+            verify!(take_bits!(4u8), |&x| x <= 4),
+            verify!(take_bits!(4u8), |&x| x <= 3)
         )
     )?;
 
     // less cr_cdt (u8), dst_ref (u16), src_ref (u16), class_options (u8)
-    let (i6, sz) = expr_opt!(i5, length.checked_sub(6))?;
+    let _ = verify!(i1, value!(length), |&x| x >= 6)?;
+    let i6 = i5;
+    let sz = length - 6;
 
     // a negotiation message from the server might be absent (sz == 0)
     let (i7, negotiation_from_server) = {
@@ -640,14 +627,13 @@ fn parse_x224_connection_confirm(
             let (i7, data) = take!(i6, sz)?;
 
             // it will be one of a response message or a failure message
-            let opt1: Option<NegotiationFromServer> =
-                match opt!(data, parse_negotiation_response) {
-                    Ok((_remainder, opt)) => match opt {
-                        Some(x) => Some(NegotiationFromServer::Response(x)),
-                        None => None,
-                    },
-                    Err(e) => return Err(e),
-                };
+            let opt1: Option<NegotiationFromServer> = match opt!(data, parse_negotiation_response) {
+                Ok((_remainder, opt)) => match opt {
+                    Some(x) => Some(NegotiationFromServer::Response(x)),
+                    None => None,
+                },
+                Err(e) => return Err(e),
+            };
             let opt2: Option<NegotiationFromServer> = match opt1 {
                 Some(x) => Some(x),
                 None => match opt!(data, parse_negotiation_failure) {
@@ -681,35 +667,30 @@ fn parse_x224_connection_confirm(
 /// "An X.224 Class 0 Connection Confirm TPDU, as specified in [X224] section 13.4."
 fn parse_x224_connection_confirm_class_0(
     input: &[u8],
-) -> IResult<&[u8], X224ConnectionConfirm> {
+) -> IResult<&[u8], X224ConnectionConfirm, RdpError> {
     let (i1, x224) = try_parse!(input, parse_x224_connection_confirm);
     if x224.class == 0 && x224.options == 0 {
         Ok((i1, x224))
     } else {
         // x.224, but not a class 0 x.224 message
-        Err(nom::Err::Error(error_position!(
-            input,
-            ErrorKind::Custom(RDP_NOT_X224_CLASS_0_ERROR)
-        )))
+        Err(nom::Err::Error(RdpError::NotX224Class0Error))
     }
 }
 
 // rdp-spec, section 2.2.1.1.1
-fn parse_negotiation_response(
-    input: &[u8],
-) -> IResult<&[u8], NegotiationResponse> {
+fn parse_negotiation_response(input: &[u8]) -> IResult<&[u8], NegotiationResponse, RdpError> {
     do_parse! {
         input,
         _typ: verify!(
             le_u8,
-            |x| x == X224ConnectionRequestType::NegotiationResponse as u8)
+            |&x| x == X224ConnectionRequestType::NegotiationResponse as u8)
         >> flags: map_opt!(
             le_u8,
             NegotiationResponseFlags::from_bits)
         // u8, u8, u16, and u32 give _length of 8
         >> _length: verify!(
             le_u16,
-            |x| x == 8)
+            |&x| x == 8)
         >> protocol: map_opt!(
             le_u32,
             num::FromPrimitive::from_u32)
@@ -718,19 +699,17 @@ fn parse_negotiation_response(
 }
 
 // rdp-spec, section 2.2.1.1.1
-fn parse_negotiation_failure(
-    input: &[u8],
-) -> IResult<&[u8], NegotiationFailure> {
+fn parse_negotiation_failure(input: &[u8]) -> IResult<&[u8], NegotiationFailure, RdpError> {
     do_parse! {
         input,
         _typ: verify!(
             le_u8,
-            |x| x == X224ConnectionRequestType::NegotiationFailure as u8)
+            |&x| x == X224ConnectionRequestType::NegotiationFailure as u8)
         >> _flags: le_u8
         // u8, u8, u16, and u32 give _length of 8
         >> _length: verify!(
             le_u16,
-            |x| x == 8)
+            |&x| x == 8)
         >> code: map_opt!(
             le_u32,
             num::FromPrimitive::from_u32)
@@ -739,17 +718,20 @@ fn parse_negotiation_failure(
 }
 
 /// x224-spec, section 13.7
-fn parse_x223_data_class_0(input: &[u8]) -> IResult<&[u8], X223Data> {
-    let (i1, _length) = verify!(input, be_u8, |x| x == 2)?;
-    let (i2, _dt_x_roa) = bits!(
-        i1,
-        tuple!(
-            verify!(take_bits!(u8, 4), |x| x == 0xf),
-            verify!(take_bits!(u8, 3), |x| x == 0),
-            verify!(take_bits!(u8, 1), |x| x == 0)
+fn parse_x223_data_class_0(input: &[u8]) -> IResult<&[u8], X223Data, RdpError> {
+    fn parser(input: &[u8]) -> IResult<&[u8], (u8, u8, u8), RdpError> {
+        bits!(
+            input,
+            tuple!(
+                verify!(take_bits!(4u8), |&x| x == 0xf),
+                verify!(take_bits!(3u8), |&x| x == 0),
+                verify!(take_bits!(1u8), |&x| x == 0)
+            )
         )
-    )?;
-    let (i3, _eot) = verify!(i2, be_u8, |x| x == 0x80)?;
+    }
+    let (i1, _length) = verify!(input, be_u8, |&x| x == 2)?;
+    let (i2, _dt_x_roa) = parser(i1)?;
+    let (i3, _eot) = verify!(i2, be_u8, |&x| x == 0x80)?;
 
     //
     // optionally find exactly one of the child messages
@@ -783,14 +765,14 @@ fn parse_x223_data_class_0(input: &[u8]) -> IResult<&[u8], X223Data> {
 }
 
 /// rdp-spec, section 2.2.1.3.2
-fn parse_mcs_connect(input: &[u8]) -> IResult<&[u8], McsConnectRequest> {
+fn parse_mcs_connect(input: &[u8]) -> IResult<&[u8], McsConnectRequest, RdpError> {
     let (i1, _ber_type) = verify!(
         input,
         le_u8,
         // BER: 0b01=application, 0b1=non-primitive, 0b11111
-        |x| x == 0x7f
+        |&x| x == 0x7f
     )?;
-    let (i2, _t125_type) = verify!(i1, le_u8, |x| x
+    let (i2, _t125_type) = verify!(i1, le_u8, |&x| x
         == T125Type::T125TypeMcsConnectRequest as u8)?;
 
     // skip to, and consume, H.221 client-to-server key
@@ -807,8 +789,7 @@ fn parse_mcs_connect(input: &[u8]) -> IResult<&[u8], McsConnectRequest> {
             Ok((rem, opt)) => match opt {
                 // found CsClientCoreData
                 Some(core_data) => {
-                    children
-                        .push(McsConnectRequestChild::CsClientCore(core_data));
+                    children.push(McsConnectRequestChild::CsClientCore(core_data));
                     rem
                 }
                 None => match opt!(remainder, parse_cs_net) {
@@ -821,36 +802,27 @@ fn parse_mcs_connect(input: &[u8]) -> IResult<&[u8], McsConnectRequest> {
                         None => {
                             match opt!(remainder, parse_cs_unknown) {
                                 // was able to parse CsUnknown
-                                Ok((rem, opt)) => {
-                                    match opt {
-                                        Some(unknown) => {
-                                            children.push(McsConnectRequestChild::CsUnknown(unknown));
-                                            rem
-                                        }
-                                        None => {
-                                            break;
-                                        }
+                                Ok((rem, opt)) => match opt {
+                                    Some(unknown) => {
+                                        children.push(McsConnectRequestChild::CsUnknown(unknown));
+                                        rem
                                     }
-                                }
+                                    None => {
+                                        break;
+                                    }
+                                },
                                 Err(nom::Err::Incomplete(i)) => {
                                     return Err(nom::Err::Incomplete(i))
                                 }
-                                Err(nom::Err::Failure(_))
-                                | Err(nom::Err::Error(_)) => break,
+                                Err(nom::Err::Failure(_)) | Err(nom::Err::Error(_)) => break,
                             }
                         }
                     },
-                    Err(nom::Err::Incomplete(i)) => {
-                        return Err(nom::Err::Incomplete(i))
-                    }
-                    Err(nom::Err::Failure(_)) | Err(nom::Err::Error(_)) => {
-                        break
-                    }
+                    Err(nom::Err::Incomplete(i)) => return Err(nom::Err::Incomplete(i)),
+                    Err(nom::Err::Failure(_)) | Err(nom::Err::Error(_)) => break,
                 },
             },
-            Err(nom::Err::Incomplete(i)) => {
-                return Err(nom::Err::Incomplete(i))
-            }
+            Err(nom::Err::Incomplete(i)) => return Err(nom::Err::Incomplete(i)),
             Err(nom::Err::Failure(_)) | Err(nom::Err::Error(_)) => break,
         };
         if remainder.len() == 0 {
@@ -863,7 +835,7 @@ fn parse_mcs_connect(input: &[u8]) -> IResult<&[u8], McsConnectRequest> {
 
 /// rdp-spec, section 2.2.1.3.2
 fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
-    let (i1, _typ) = verify!(input, le_u16, |x| x == CsType::Core as u16)?;
+    let (i1, _typ) = verify!(input, le_u16, |&x| x == CsType::Core as u16)?;
     // less u16, u16
     let (i2, sz) = map_opt!(i1, le_u16, |x: u16| x.checked_sub(4))?;
     let (i3, data) = take!(i2, sz)?;
@@ -885,14 +857,14 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     //
 
     let (j13, post_beta2_color_depth) =
-        match opt!(j12, map_opt!(le_u16, num::FromPrimitive::from_u16)) {
+        match opt!(j12, map_opt!(le_u16, num::FromPrimitive::from_u16)) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j12, None),
         };
 
     let (j14, client_product_id) = match post_beta2_color_depth {
         None => (j13, None),
-        Some(_) => match opt!(j13, le_u16) {
+        Some(_) => match opt!(j13, le_u16) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j13, None),
         },
@@ -900,7 +872,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j15, serial_number) = match client_product_id {
         None => (j14, None),
-        Some(_) => match opt!(j14, le_u32) {
+        Some(_) => match opt!(j14, le_u32) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j14, None),
         },
@@ -909,7 +881,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j16, high_color_depth) = match serial_number {
         None => (j15, None),
         Some(_) => {
-            match opt!(j15, map_opt!(le_u16, num::FromPrimitive::from_u16)) {
+            match opt!(j15, map_opt!(le_u16, num::FromPrimitive::from_u16)) as IResult<&[u8], _> {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j15, None),
             }
@@ -919,7 +891,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j17, supported_color_depth) = match high_color_depth {
         None => (j16, None),
         Some(_) => {
-            match opt!(j16, map_opt!(le_u16, SupportedColorDepth::from_bits)) {
+            match opt!(j16, map_opt!(le_u16, SupportedColorDepth::from_bits)) as IResult<&[u8], _> {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j16, None),
             }
@@ -929,7 +901,8 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j18, early_capability_flags) = match supported_color_depth {
         None => (j17, None),
         Some(_) => {
-            match opt!(j17, map_opt!(le_u16, EarlyCapabilityFlags::from_bits)) {
+            match opt!(j17, map_opt!(le_u16, EarlyCapabilityFlags::from_bits)) as IResult<&[u8], _>
+            {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j17, None),
             }
@@ -938,16 +911,18 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j19, client_dig_product_id) = match early_capability_flags {
         None => (j18, None),
-        Some(_) => match opt!(j18, map_res!(take!(64), le_slice_to_string)) {
-            Ok((rem, obj)) => (rem, obj),
-            _ => (j18, None),
-        },
+        Some(_) => {
+            match opt(map_res(take(64usize), le_slice_to_string))(j18) as IResult<&[u8], _> {
+                Ok((rem, obj)) => (rem, obj),
+                _ => (j18, None),
+            }
+        }
     };
 
     let (j20, connection_hint) = match client_dig_product_id {
         None => (j19, None),
         Some(_) => {
-            match opt!(j19, map_opt!(le_u8, num::FromPrimitive::from_u8)) {
+            match opt(map_opt(le_u8, num::FromPrimitive::from_u8))(j19) as IResult<&[u8], _> {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j19, None),
             }
@@ -956,7 +931,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j21, pad) = match connection_hint {
         None => (j20, None),
-        Some(_) => match opt!(j20, take!(1)) {
+        Some(_) => match opt(take(1usize))(j20) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j20, None),
         },
@@ -965,7 +940,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j22, server_selected_protocol) = match pad {
         None => (j21, None),
         Some(_) => {
-            match opt!(j21, map_opt!(le_u32, ProtocolFlags::from_bits)) {
+            match opt!(j21, map_opt!(le_u32, ProtocolFlags::from_bits)) as IResult<&[u8], _> {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j21, None),
             }
@@ -974,7 +949,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j23, desktop_physical_width) = match server_selected_protocol {
         None => (j22, None),
-        Some(_) => match opt!(j22, map_opt!(le_u32, millimeters_to_opt)) {
+        Some(_) => match opt!(j22, map_opt!(le_u32, millimeters_to_opt)) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j22, None),
         },
@@ -982,7 +957,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j24, desktop_physical_height) = match desktop_physical_width {
         None => (j23, None),
-        Some(_) => match opt!(j23, map_opt!(le_u32, millimeters_to_opt)) {
+        Some(_) => match opt!(j23, map_opt!(le_u32, millimeters_to_opt)) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j23, None),
         },
@@ -991,7 +966,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
     let (j25, desktop_orientation) = match desktop_physical_height {
         None => (j24, None),
         Some(_) => {
-            match opt!(j24, map_opt!(le_u16, num::FromPrimitive::from_u16)) {
+            match opt!(j24, map_opt!(le_u16, num::FromPrimitive::from_u16)) as IResult<&[u8], _> {
                 Ok((rem, obj)) => (rem, obj),
                 _ => (j24, None),
             }
@@ -1000,7 +975,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (j26, desktop_scale_factor) = match desktop_orientation {
         None => (j25, None),
-        Some(_) => match opt!(j25, map_opt!(le_u32, desktop_scale_to_opt)) {
+        Some(_) => match opt!(j25, map_opt!(le_u32, desktop_scale_to_opt)) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j25, None),
         },
@@ -1008,7 +983,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
     let (_j27, device_scale_factor) = match desktop_scale_factor {
         None => (j26, None),
-        Some(_) => match opt!(j26, map_opt!(le_u32, device_scale_to_opt)) {
+        Some(_) => match opt!(j26, map_opt!(le_u32, device_scale_to_opt)) as IResult<&[u8], _> {
             Ok((rem, obj)) => (rem, obj),
             _ => (j26, None),
         },
@@ -1049,7 +1024,7 @@ fn parse_cs_client_core_data(input: &[u8]) -> IResult<&[u8], CsClientCoreData> {
 
 /// rdp-spec, section 2.2.1.3.4
 fn parse_cs_net(input: &[u8]) -> IResult<&[u8], CsNet> {
-    let (i1, _typ) = verify!(input, le_u16, |x| x == CsType::Net as u16)?;
+    let (i1, _typ) = verify!(input, le_u16, |&x| x == CsType::Net as u16)?;
     // less _typ (u16), this length indicator (u16), count (u32)
     let (i2, sz) = map_opt!(i1, le_u16, |x: u16| x.checked_sub(8))?;
     let (i3, count) = try_parse!(i2, le_u32);
@@ -1093,18 +1068,16 @@ fn parse_cs_unknown(input: &[u8]) -> IResult<&[u8], CsUnknown> {
 }
 
 // rdp-spec, section 2.2.1.4
-fn parse_mcs_connect_response(
-    input: &[u8],
-) -> IResult<&[u8], McsConnectResponse> {
+fn parse_mcs_connect_response(input: &[u8]) -> IResult<&[u8], McsConnectResponse, RdpError> {
     do_parse! {
         input,
         _ber_type: verify!(
             le_u8,
             // BER: 0b01=application, 0b1=non-primitive, 0b11111
-            |x| x == 0x7f)
+            |&x| x == 0x7f)
         >> _t125_type: verify!(
             le_u8,
-            |x| x == T125Type::T125TypeMcsConnectResponse as u8)
+            |&x| x == T125Type::T125TypeMcsConnectResponse as u8)
         >> (McsConnectResponse {})
     }
 }
@@ -1114,30 +1087,27 @@ mod tests_cookie_21182 {
     use crate::rdp::parser::*;
 
     static BYTES: [u8; 37] = [
-        0x03, 0x00, 0x00, 0x25, 0x20, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43,
-        0x6f, 0x6f, 0x6b, 0x69, 0x65, 0x3a, 0x20, 0x6d, 0x73, 0x74, 0x73, 0x68,
-        0x61, 0x73, 0x68, 0x3d, 0x75, 0x73, 0x65, 0x72, 0x31, 0x32, 0x33, 0x0d,
-        0x0a,
+        0x03, 0x00, 0x00, 0x25, 0x20, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x43, 0x6f, 0x6f, 0x6b,
+        0x69, 0x65, 0x3a, 0x20, 0x6d, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73, 0x68, 0x3d, 0x75, 0x73,
+        0x65, 0x72, 0x31, 0x32, 0x33, 0x0d, 0x0a,
     ];
 
     #[test]
     fn test_t123_x224_cookie() {
         let t123_bytes = &BYTES[..];
         let t123_tpkt: T123Tpkt = T123Tpkt {
-            child: T123TpktChild::X224ConnectionRequest(
-                X224ConnectionRequest {
-                    cdt: 0,
-                    dst_ref: 0,
-                    src_ref: 0,
-                    class: 0,
-                    options: 0,
-                    cookie: Some(RdpCookie {
-                        mstshash: String::from("user123"),
-                    }),
-                    negotiation_request: None,
-                    data: Vec::new(),
-                },
-            ),
+            child: T123TpktChild::X224ConnectionRequest(X224ConnectionRequest {
+                cdt: 0,
+                dst_ref: 0,
+                src_ref: 0,
+                class: 0,
+                options: 0,
+                cookie: Some(RdpCookie {
+                    mstshash: String::from("user123"),
+                }),
+                negotiation_request: None,
+                data: Vec::new(),
+            }),
         };
         assert_eq!(Ok((&[][..], t123_tpkt)), parse_t123_tpkt(t123_bytes));
     }
@@ -1148,8 +1118,8 @@ mod tests_negotiate_49350 {
     use crate::rdp::parser::*;
 
     static BYTES: [u8; 20] = [
-        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-        0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff,
+        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xff,
     ];
     static TPKT_BEGIN: usize = 0;
     static X224_BEGIN: usize = TPKT_BEGIN + 4;
@@ -1163,21 +1133,19 @@ mod tests_negotiate_49350 {
     fn test_t123_x224_negotiate() {
         let t123_bytes = &BYTES[TPKT_BEGIN..];
         let t123_tpkt: T123Tpkt = T123Tpkt {
-            child: T123TpktChild::X224ConnectionRequest(
-                X224ConnectionRequest {
-                    cdt: 0,
-                    dst_ref: 0,
-                    src_ref: 0,
-                    class: 0,
-                    options: 0,
-                    cookie: None,
-                    negotiation_request: Some(NegotiationRequest {
-                        flags: NegotiationRequestFlags::empty(),
-                        protocols: ProtocolFlags::PROTOCOL_RDP,
-                    }),
-                    data: Vec::new(),
-                },
-            ),
+            child: T123TpktChild::X224ConnectionRequest(X224ConnectionRequest {
+                cdt: 0,
+                dst_ref: 0,
+                src_ref: 0,
+                class: 0,
+                options: 0,
+                cookie: None,
+                negotiation_request: Some(NegotiationRequest {
+                    flags: NegotiationRequestFlags::empty(),
+                    protocols: ProtocolFlags::PROTOCOL_RDP,
+                }),
+                data: Vec::new(),
+            }),
         };
         assert_eq!(
             Ok((&BYTES[PADDING_BEGIN..][..], t123_tpkt)),
@@ -1191,41 +1159,34 @@ mod tests_core_49350 {
     use crate::rdp::parser::*;
 
     static BYTES: [u8; 429] = [
-        0x03, 0x00, 0x01, 0xac, 0x02, 0xf0, 0x80, 0x7f, 0x65, 0x82, 0x01, 0xa0,
-        0x04, 0x01, 0x01, 0x04, 0x01, 0x01, 0x01, 0x01, 0xff, 0x30, 0x19, 0x02,
-        0x01, 0x22, 0x02, 0x01, 0x02, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02,
-        0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02,
-        0x30, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02,
-        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0x04, 0x20,
-        0x02, 0x01, 0x02, 0x30, 0x1c, 0x02, 0x02, 0xff, 0xff, 0x02, 0x02, 0xfc,
-        0x17, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02,
-        0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02, 0x04, 0x82, 0x01,
-        0x3f, 0x00, 0x05, 0x00, 0x14, 0x7c, 0x00, 0x01, 0x81, 0x36, 0x00, 0x08,
-        0x00, 0x10, 0x00, 0x01, 0xc0, 0x00, 0x44, 0x75, 0x63, 0x61, 0x81, 0x28,
-        0x01, 0xc0, 0xd8, 0x00, 0x04, 0x00, 0x08, 0x00, 0x00, 0x05, 0x00, 0x03,
-        0x01, 0xca, 0x03, 0xaa, 0x09, 0x04, 0x00, 0x00, 0x71, 0x17, 0x00, 0x00,
-        0x53, 0x00, 0x45, 0x00, 0x52, 0x00, 0x56, 0x00, 0x45, 0x00, 0x52, 0x00,
-        0x2d, 0x00, 0x58, 0x00, 0x59, 0x00, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0xca, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0f, 0x00,
-        0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x04, 0xc0, 0x0c, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x02, 0xc0, 0x0c, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x03, 0xc0, 0x38, 0x00, 0x04, 0x00, 0x00, 0x00, 0x72, 0x64, 0x70, 0x64,
-        0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x72, 0x64, 0x70, 0x73,
-        0x6e, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x64, 0x72, 0x64, 0x79,
-        0x6e, 0x76, 0x63, 0x00, 0x00, 0x00, 0x80, 0xc0, 0x63, 0x6c, 0x69, 0x70,
+        0x03, 0x00, 0x01, 0xac, 0x02, 0xf0, 0x80, 0x7f, 0x65, 0x82, 0x01, 0xa0, 0x04, 0x01, 0x01,
+        0x04, 0x01, 0x01, 0x01, 0x01, 0xff, 0x30, 0x19, 0x02, 0x01, 0x22, 0x02, 0x01, 0x02, 0x02,
+        0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff,
+        0x02, 0x01, 0x02, 0x30, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02,
+        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0x04, 0x20, 0x02, 0x01, 0x02,
+        0x30, 0x1c, 0x02, 0x02, 0xff, 0xff, 0x02, 0x02, 0xfc, 0x17, 0x02, 0x02, 0xff, 0xff, 0x02,
+        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02,
+        0x04, 0x82, 0x01, 0x3f, 0x00, 0x05, 0x00, 0x14, 0x7c, 0x00, 0x01, 0x81, 0x36, 0x00, 0x08,
+        0x00, 0x10, 0x00, 0x01, 0xc0, 0x00, 0x44, 0x75, 0x63, 0x61, 0x81, 0x28, 0x01, 0xc0, 0xd8,
+        0x00, 0x04, 0x00, 0x08, 0x00, 0x00, 0x05, 0x00, 0x03, 0x01, 0xca, 0x03, 0xaa, 0x09, 0x04,
+        0x00, 0x00, 0x71, 0x17, 0x00, 0x00, 0x53, 0x00, 0x45, 0x00, 0x52, 0x00, 0x56, 0x00, 0x45,
+        0x00, 0x52, 0x00, 0x2d, 0x00, 0x58, 0x00, 0x59, 0x00, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xca, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x08, 0x00, 0x0f, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0xc0, 0x0c, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0xc0, 0x0c, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x38,
+        0x00, 0x04, 0x00, 0x00, 0x00, 0x72, 0x64, 0x70, 0x64, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x80, 0x80, 0x72, 0x64, 0x70, 0x73, 0x6e, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x64,
+        0x72, 0x64, 0x79, 0x6e, 0x76, 0x63, 0x00, 0x00, 0x00, 0x80, 0xc0, 0x63, 0x6c, 0x69, 0x70,
         0x72, 0x64, 0x72, 0x00, 0x00, 0x00, 0xa0, 0xc0, 0xff,
     ];
     static TPKT_BEGIN: usize = 0;
@@ -1296,9 +1257,7 @@ mod tests_core_49350 {
         children.push(McsConnectRequestChild::CsNet(CsNet { channels }));
         let t123_tpkt: T123Tpkt = T123Tpkt {
             child: T123TpktChild::Data(X223Data {
-                child: X223DataChild::McsConnectRequest(McsConnectRequest {
-                    children,
-                }),
+                child: X223DataChild::McsConnectRequest(McsConnectRequest { children }),
             }),
         };
         assert_eq!(
@@ -1313,8 +1272,7 @@ mod tests_x223_response_49350 {
     use crate::rdp::parser::*;
 
     // changed offset 9 from 0x65 to 0x66 so it is no longer an mcs connect
-    static BYTES: [u8; 9] =
-        [0x03, 0x00, 0x00, 0x09, 0x02, 0xf0, 0x80, 0x7f, 0x66];
+    static BYTES: [u8; 9] = [0x03, 0x00, 0x00, 0x09, 0x02, 0xf0, 0x80, 0x7f, 0x66];
 
     #[test]
     fn test_x223_response() {
@@ -1324,9 +1282,7 @@ mod tests_x223_response_49350 {
                 &[][..],
                 T123Tpkt {
                     child: T123TpktChild::Data(X223Data {
-                        child: X223DataChild::McsConnectResponse(
-                            McsConnectResponse {}
-                        ),
+                        child: X223DataChild::McsConnectResponse(McsConnectResponse {}),
                     })
                 }
             )),
@@ -1340,8 +1296,7 @@ mod tests_t123_raw_49350 {
     use crate::rdp::parser::*;
 
     // changed offset 4 from 0x02 to 0x03 so it is no longer an X223 data object
-    static BYTES: [u8; 9] =
-        [0x03, 0x00, 0x00, 0x09, 0x03, 0xf0, 0x80, 0x7f, 0x65];
+    static BYTES: [u8; 9] = [0x03, 0x00, 0x00, 0x09, 0x03, 0xf0, 0x80, 0x7f, 0x65];
 
     #[test]
     fn test_t123_raw() {
@@ -1364,8 +1319,8 @@ mod tests_x224_raw_49350 {
 
     // changed offset 11 from 0x01 to 0x02 so it is not a known X224 payload type
     static BYTES: [u8; 19] = [
-        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
-        0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x08, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     ];
 
     #[test]
@@ -1375,18 +1330,16 @@ mod tests_x224_raw_49350 {
             Ok((
                 &[][..],
                 T123Tpkt {
-                    child: T123TpktChild::X224ConnectionRequest(
-                        X224ConnectionRequest {
-                            cdt: 0,
-                            dst_ref: 0,
-                            src_ref: 0,
-                            class: 0,
-                            options: 0,
-                            cookie: None,
-                            negotiation_request: None,
-                            data: BYTES[11..].to_vec(),
-                        }
-                    )
+                    child: T123TpktChild::X224ConnectionRequest(X224ConnectionRequest {
+                        cdt: 0,
+                        dst_ref: 0,
+                        src_ref: 0,
+                        class: 0,
+                        options: 0,
+                        cookie: None,
+                        negotiation_request: None,
+                        data: BYTES[11..].to_vec(),
+                    })
                 }
             )),
             parse_t123_tpkt(t123_bytes)
@@ -1399,8 +1352,7 @@ mod tests_x223_raw_49350 {
     use crate::rdp::parser::*;
 
     // changed offset 9 from 0x65 to 0xff so it is no longer an mcs connect
-    static BYTES: [u8; 9] =
-        [0x03, 0x00, 0x00, 0x09, 0x02, 0xf0, 0x80, 0x7f, 0xff];
+    static BYTES: [u8; 9] = [0x03, 0x00, 0x00, 0x09, 0x02, 0xf0, 0x80, 0x7f, 0xff];
 
     #[test]
     fn test_x223_raw() {
@@ -1421,12 +1373,12 @@ mod tests_x223_raw_49350 {
 
 #[cfg(test)]
 mod tests_negotiate_incomplete_49350 {
-    use nom;
     use crate::rdp::parser::*;
+    use nom;
 
     static BYTES: [u8; 19] = [
-        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
-        0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00,
+        0x00, 0x00, 0x00, 0x00,
     ];
     static TPKT_BEGIN: usize = 0;
     static X224_BEGIN: usize = TPKT_BEGIN + 4;
@@ -1475,45 +1427,38 @@ mod tests_negotiate_incomplete_49350 {
 
 #[cfg(test)]
 mod tests_core_incomplete_49350 {
-    use nom;
     use crate::rdp::parser::*;
+    use nom;
 
     static BYTES: [u8; 428] = [
-        0x03, 0x00, 0x01, 0xac, 0x02, 0xf0, 0x80, 0x7f, 0x65, 0x82, 0x01, 0xa0,
-        0x04, 0x01, 0x01, 0x04, 0x01, 0x01, 0x01, 0x01, 0xff, 0x30, 0x19, 0x02,
-        0x01, 0x22, 0x02, 0x01, 0x02, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02,
-        0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02,
-        0x30, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02,
-        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0x04, 0x20,
-        0x02, 0x01, 0x02, 0x30, 0x1c, 0x02, 0x02, 0xff, 0xff, 0x02, 0x02, 0xfc,
-        0x17, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02,
-        0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02, 0x04, 0x82, 0x01,
-        0x3f, 0x00, 0x05, 0x00, 0x14, 0x7c, 0x00, 0x01, 0x81, 0x36, 0x00, 0x08,
-        0x00, 0x10, 0x00, 0x01, 0xc0, 0x00, 0x44, 0x75, 0x63, 0x61, 0x81, 0x28,
-        0x01, 0xc0, 0xd8, 0x00, 0x04, 0x00, 0x08, 0x00, 0x00, 0x05, 0x00, 0x03,
-        0x01, 0xca, 0x03, 0xaa, 0x09, 0x04, 0x00, 0x00, 0x71, 0x17, 0x00, 0x00,
-        0x53, 0x00, 0x45, 0x00, 0x52, 0x00, 0x56, 0x00, 0x45, 0x00, 0x52, 0x00,
-        0x2d, 0x00, 0x58, 0x00, 0x59, 0x00, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x01, 0xca, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0f, 0x00,
-        0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x04, 0xc0, 0x0c, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x02, 0xc0, 0x0c, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-        0x03, 0xc0, 0x38, 0x00, 0x04, 0x00, 0x00, 0x00, 0x72, 0x64, 0x70, 0x64,
-        0x72, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x80, 0x72, 0x64, 0x70, 0x73,
-        0x6e, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x64, 0x72, 0x64, 0x79,
-        0x6e, 0x76, 0x63, 0x00, 0x00, 0x00, 0x80, 0xc0, 0x63, 0x6c, 0x69, 0x70,
+        0x03, 0x00, 0x01, 0xac, 0x02, 0xf0, 0x80, 0x7f, 0x65, 0x82, 0x01, 0xa0, 0x04, 0x01, 0x01,
+        0x04, 0x01, 0x01, 0x01, 0x01, 0xff, 0x30, 0x19, 0x02, 0x01, 0x22, 0x02, 0x01, 0x02, 0x02,
+        0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff,
+        0x02, 0x01, 0x02, 0x30, 0x19, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02, 0x01, 0x01, 0x02,
+        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0x04, 0x20, 0x02, 0x01, 0x02,
+        0x30, 0x1c, 0x02, 0x02, 0xff, 0xff, 0x02, 0x02, 0xfc, 0x17, 0x02, 0x02, 0xff, 0xff, 0x02,
+        0x01, 0x01, 0x02, 0x01, 0x00, 0x02, 0x01, 0x01, 0x02, 0x02, 0xff, 0xff, 0x02, 0x01, 0x02,
+        0x04, 0x82, 0x01, 0x3f, 0x00, 0x05, 0x00, 0x14, 0x7c, 0x00, 0x01, 0x81, 0x36, 0x00, 0x08,
+        0x00, 0x10, 0x00, 0x01, 0xc0, 0x00, 0x44, 0x75, 0x63, 0x61, 0x81, 0x28, 0x01, 0xc0, 0xd8,
+        0x00, 0x04, 0x00, 0x08, 0x00, 0x00, 0x05, 0x00, 0x03, 0x01, 0xca, 0x03, 0xaa, 0x09, 0x04,
+        0x00, 0x00, 0x71, 0x17, 0x00, 0x00, 0x53, 0x00, 0x45, 0x00, 0x52, 0x00, 0x56, 0x00, 0x45,
+        0x00, 0x52, 0x00, 0x2d, 0x00, 0x58, 0x00, 0x59, 0x00, 0x5a, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x0c, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xca, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x08, 0x00, 0x0f, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x04, 0xc0, 0x0c, 0x00, 0x0d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x02, 0xc0, 0x0c, 0x00, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0xc0, 0x38,
+        0x00, 0x04, 0x00, 0x00, 0x00, 0x72, 0x64, 0x70, 0x64, 0x72, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x80, 0x80, 0x72, 0x64, 0x70, 0x73, 0x6e, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0xc0, 0x64,
+        0x72, 0x64, 0x79, 0x6e, 0x76, 0x63, 0x00, 0x00, 0x00, 0x80, 0xc0, 0x63, 0x6c, 0x69, 0x70,
         0x72, 0x64, 0x72, 0x00, 0x00, 0x00, 0xa0, 0xc0,
     ];
     static X223_BEGIN: usize = 4;

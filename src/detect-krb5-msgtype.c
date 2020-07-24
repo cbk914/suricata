@@ -1,4 +1,4 @@
-/* Copyright (C) 2018 Open Information Security Foundation
+/* Copyright (C) 2018-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -23,6 +23,7 @@
 
 #include "suricata-common.h"
 #include "util-unittest.h"
+#include "util-byte.h"
 
 #include "detect-parse.h"
 #include "detect-engine.h"
@@ -36,15 +37,14 @@
  * \brief Regex for parsing our keyword options
  */
 #define PARSE_REGEX  "^\\s*([A-z0-9\\.]+|\"[A-z0-9_\\.]+\")\\s*$"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 /* Prototypes of functions registered in DetectKrb5MsgTypeRegister below */
 static int DetectKrb5MsgTypeMatch (DetectEngineThreadCtx *, Flow *,
                                    uint8_t, void *, void *, const Signature *,
                                    const SigMatchCtx *);
 static int DetectKrb5MsgTypeSetup (DetectEngineCtx *, Signature *, const char *);
-static void DetectKrb5MsgTypeFree (void *);
+static void DetectKrb5MsgTypeFree (DetectEngineCtx *, void *);
 static void DetectKrb5MsgTypeRegisterTests (void);
 
 static int DetectEngineInspectKRB5Generic(ThreadVars *tv,
@@ -63,7 +63,7 @@ static int g_krb5_msg_type_list_id = 0;
 void DetectKrb5MsgTypeRegister(void) {
     sigmatch_table[DETECT_AL_KRB5_MSGTYPE].name = "krb5_msg_type";
     sigmatch_table[DETECT_AL_KRB5_MSGTYPE].desc = "match Kerberos 5 message type";
-    sigmatch_table[DETECT_AL_KRB5_MSGTYPE].url = DOC_URL DOC_VERSION "/rules/kerberos-keywords.html#krb5-msg-type";
+    sigmatch_table[DETECT_AL_KRB5_MSGTYPE].url = "/rules/kerberos-keywords.html#krb5-msg-type";
     sigmatch_table[DETECT_AL_KRB5_MSGTYPE].Match = NULL;
     sigmatch_table[DETECT_AL_KRB5_MSGTYPE].AppLayerTxMatch = DetectKrb5MsgTypeMatch;
     sigmatch_table[DETECT_AL_KRB5_MSGTYPE].Setup = DetectKrb5MsgTypeSetup;
@@ -79,7 +79,7 @@ void DetectKrb5MsgTypeRegister(void) {
             DetectEngineInspectKRB5Generic);
 
     /* set up the PCRE for keyword parsing */
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_krb5_msg_type_list_id = DetectBufferTypeRegister("krb5_msg_type");
     SCLogDebug("g_krb5_msg_type_list_id %d", g_krb5_msg_type_list_id);
@@ -136,13 +136,10 @@ static DetectKrb5MsgTypeData *DetectKrb5MsgTypeParse (const char *krb5str)
 {
     DetectKrb5MsgTypeData *krb5d = NULL;
     char arg1[4] = "";
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study,
-                    krb5str, strlen(krb5str),
-                    0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, krb5str, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret != 2) {
         SCLogError(SC_ERR_PCRE_MATCH, "parse error, ret %" PRId32 "", ret);
         goto error;
@@ -157,8 +154,10 @@ static DetectKrb5MsgTypeData *DetectKrb5MsgTypeParse (const char *krb5str)
     krb5d = SCMalloc(sizeof (DetectKrb5MsgTypeData));
     if (unlikely(krb5d == NULL))
         goto error;
-    krb5d->msg_type = (uint8_t)atoi(arg1);
-
+    if (StringParseUint8(&krb5d->msg_type, 10, 0,
+                         (const char *)arg1) < 0) {
+        goto error;
+    }
     return krb5d;
 
 error:
@@ -203,7 +202,7 @@ static int DetectKrb5MsgTypeSetup (DetectEngineCtx *de_ctx, Signature *s, const 
 
 error:
     if (krb5d != NULL)
-        DetectKrb5MsgTypeFree(krb5d);
+        DetectKrb5MsgTypeFree(de_ctx, krb5d);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -214,7 +213,7 @@ error:
  *
  * \param ptr pointer to DetectKrb5Data
  */
-static void DetectKrb5MsgTypeFree(void *ptr) {
+static void DetectKrb5MsgTypeFree(DetectEngineCtx *de_ctx, void *ptr) {
     DetectKrb5MsgTypeData *krb5d = (DetectKrb5MsgTypeData *)ptr;
 
     SCFree(krb5d);
@@ -231,7 +230,7 @@ static int DetectKrb5MsgTypeParseTest01 (void)
     DetectKrb5MsgTypeData *krb5d = DetectKrb5MsgTypeParse("10");
     FAIL_IF_NULL(krb5d);
     FAIL_IF(!(krb5d->msg_type == 10));
-    DetectKrb5MsgTypeFree(krb5d);
+    DetectKrb5MsgTypeFree(NULL, krb5d);
     PASS;
 }
 

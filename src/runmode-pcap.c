@@ -31,6 +31,7 @@
 #include "util-runmodes.h"
 #include "util-atomic.h"
 #include "util-misc.h"
+#include "util-byte.h"
 
 const char *RunModeIdsGetDefaultMode(void)
 {
@@ -63,7 +64,7 @@ static void PcapDerefConfig(void *conf)
 {
     PcapIfaceConfig *pfp = (PcapIfaceConfig *)conf;
     /* Pcap config is used only once but cost of this low. */
-    if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
+    if (SC_ATOMIC_SUB(pfp->ref, 1) == 1) {
         SCFree(pfp);
     }
 }
@@ -144,7 +145,11 @@ static void *ParsePcapConfig(const char *iface)
         aconf->threads = 1;
     } else {
         if (threadsstr != NULL) {
-            aconf->threads = atoi(threadsstr);
+            if (StringParseInt32(&aconf->threads, 10, 0, (const char *)threadsstr) < 0) {
+                SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid value for "
+                             "pcap.threads: %s, resetting to 1", threadsstr);
+                aconf->threads = 1;
+            }
         }
     }
     if (aconf->threads == 0) {
@@ -216,7 +221,6 @@ static void *ParsePcapConfig(const char *iface)
         aconf->snaplen = snaplen;
     }
 
-
     return aconf;
 }
 
@@ -247,8 +251,7 @@ int RunModeIdsPcapSingle(void)
                                     "DecodePcap", thread_name_single,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Runmode start failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Runmode start failed");
     }
 
     SCLogInfo("RunModeIdsPcapSingle initialised");
@@ -288,8 +291,7 @@ int RunModeIdsPcapAutoFp(void)
                               "DecodePcap", thread_name_autofp,
                               live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Runmode start failed");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Runmode start failed");
     }
 
     SCLogInfo("RunModeIdsPcapAutoFp initialised");
@@ -320,8 +322,7 @@ int RunModeIdsPcapWorkers(void)
                                     "DecodePcap", thread_name_workers,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     SCLogInfo("RunModeIdsPcapWorkers initialised");

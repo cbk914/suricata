@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -44,15 +44,14 @@
 
 #define PARSE_REGEX "\\S[0-9A-z_]+[.][A-z0-9_+.]+$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectEngineEventMatch (DetectEngineThreadCtx *,
         Packet *, const Signature *, const SigMatchCtx *);
 static int DetectEngineEventSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectDecodeEventSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectStreamEventSetup (DetectEngineCtx *, Signature *, const char *);
-static void DetectEngineEventFree (void *);
+static void DetectEngineEventFree (DetectEngineCtx *, void *);
 void EngineEventRegisterTests(void);
 
 
@@ -78,7 +77,7 @@ void DetectEngineEventRegister (void)
     sigmatch_table[DETECT_STREAM_EVENT].Setup = DetectStreamEventSetup;
     sigmatch_table[DETECT_STREAM_EVENT].Free  = DetectEngineEventFree;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /**
@@ -120,11 +119,10 @@ static DetectEngineEventData *DetectEngineEventParse (const char *rawstr)
 {
     int i;
     DetectEngineEventData *de = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0, found = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32
                 ", string %s", ret, rawstr);
@@ -213,7 +211,7 @@ static int DetectEngineEventSetup (DetectEngineCtx *de_ctx, Signature *s, const 
  *
  * \param de pointer to DetectEngineEventData
  */
-static void DetectEngineEventFree(void *ptr)
+static void DetectEngineEventFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectEngineEventData *de = (DetectEngineEventData *)ptr;
     if (de)
@@ -267,7 +265,7 @@ static int EngineEventTestParse01 (void)
     DetectEngineEventData *de = NULL;
     de = DetectEngineEventParse("decoder.ipv4.pkt_too_small");
     if (de) {
-        DetectEngineEventFree(de);
+        DetectEngineEventFree(NULL, de);
         return 1;
     }
 
@@ -283,7 +281,7 @@ static int EngineEventTestParse02 (void)
     DetectEngineEventData *de = NULL;
     de = DetectEngineEventParse("decoder.PPP.pkt_too_small");
     if (de) {
-        DetectEngineEventFree(de);
+        DetectEngineEventFree(NULL, de);
         return 1;
     }
 
@@ -298,7 +296,7 @@ static int EngineEventTestParse03 (void)
     DetectEngineEventData *de = NULL;
     de = DetectEngineEventParse("decoder.IPV6.PKT_TOO_SMALL");
     if (de) {
-        DetectEngineEventFree(de);
+        DetectEngineEventFree(NULL, de);
         return 1;
     }
 
@@ -313,7 +311,7 @@ static int EngineEventTestParse04 (void)
     DetectEngineEventData *de = NULL;
     de = DetectEngineEventParse("decoder.IPV6.INVALID_EVENT");
     if (de) {
-        DetectEngineEventFree(de);
+        DetectEngineEventFree(NULL, de);
         return 0;
     }
 
@@ -328,7 +326,7 @@ static int EngineEventTestParse05 (void)
     DetectEngineEventData *de = NULL;
     de = DetectEngineEventParse("decoder.IPV-6,INVALID_CHAR");
     if (de) {
-        DetectEngineEventFree(de);
+        DetectEngineEventFree(NULL, de);
         return 0;
     }
 

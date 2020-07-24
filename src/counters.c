@@ -33,6 +33,7 @@
 #include "util-time.h"
 #include "util-unittest.h"
 #include "util-debug.h"
+#include "util-byte.h"
 #include "util-privs.h"
 #include "util-signal.h"
 #include "unix-manager.h"
@@ -147,7 +148,7 @@ static void StatsPublicThreadContextCleanup(StatsPublicThreadContext *t)
 void StatsAddUI64(ThreadVars *tv, uint16_t id, uint64_t x)
 {
     StatsPrivateThreadContext *pca = &tv->perf_private_ctx;
-#ifdef UNITTESTS
+#if defined (UNITTESTS) || defined (FUZZ)
     if (pca->initialized == 0)
         return;
 #endif
@@ -168,7 +169,7 @@ void StatsAddUI64(ThreadVars *tv, uint16_t id, uint64_t x)
 void StatsIncr(ThreadVars *tv, uint16_t id)
 {
     StatsPrivateThreadContext *pca = &tv->perf_private_ctx;
-#ifdef UNITTESTS
+#if defined (UNITTESTS) || defined (FUZZ)
     if (pca->initialized == 0)
         return;
 #endif
@@ -190,7 +191,7 @@ void StatsIncr(ThreadVars *tv, uint16_t id)
 void StatsSetUI64(ThreadVars *tv, uint16_t id, uint64_t x)
 {
     StatsPrivateThreadContext *pca = &tv->perf_private_ctx;
-#ifdef UNITTESTS
+#if defined (UNITTESTS) || defined (FUZZ)
     if (pca->initialized == 0)
         return;
 #endif
@@ -233,10 +234,6 @@ static ConfNode *GetConfig(void) {
 static void StatsInitCtxPreOutput(void)
 {
     SCEnter();
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    stats_enabled = FALSE;
-    SCReturn;
-#endif
     ConfNode *stats = GetConfig();
     if (stats != NULL) {
         const char *enabled = ConfNodeLookupChildValue(stats, "enabled");
@@ -250,12 +247,17 @@ static void StatsInitCtxPreOutput(void)
         if (gstats == NULL) {
             SCLogWarning(SC_ERR_STATS_LOG_GENERIC, "global stats config is missing. "
                     "Stats enabled through legacy stats.log. "
-                    "See %s%s/configuration/suricata-yaml.html#stats", DOC_URL, DOC_VERSION);
+                    "See %s/configuration/suricata-yaml.html#stats", GetDocURL());
         }
 
         const char *interval = ConfNodeLookupChildValue(stats, "interval");
         if (interval != NULL)
-            stats_tts = (uint32_t) atoi(interval);
+            if (StringParseUint32(&stats_tts, 10, 0, interval) < 0) {
+                SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid value for "
+                             "interval: \"%s\". Resetting to %d.", interval,
+                             STATS_MGMTT_TTS);
+                stats_tts = STATS_MGMTT_TTS;
+            }
 
         int b;
         int ret = ConfGetChildValueBool(stats, "decoder-events", &b);
@@ -284,8 +286,7 @@ static void StatsInitCtxPostOutput(void)
 
     /* init the lock used by StatsThreadStore */
     if (SCMutexInit(&stats_ctx->sts_lock, NULL) != 0) {
-        SCLogError(SC_ERR_INITIALIZATION, "error initializing sts mutex");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "error initializing sts mutex");
     }
 
     if (stats_enabled && !OutputStatsLoggersRegistered()) {
@@ -861,8 +862,8 @@ void StatsInit(void)
 {
     BUG_ON(stats_ctx != NULL);
     if ( (stats_ctx = SCMalloc(sizeof(StatsGlobalContext))) == NULL) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in StatsInitCtx. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in StatsInitCtx. Exiting...");
     }
     memset(stats_ctx, 0, sizeof(StatsGlobalContext));
 
@@ -901,30 +902,25 @@ void StatsSpawnThreads(void)
     tv_wakeup = TmThreadCreateMgmtThread(thread_name_counter_wakeup,
                                          StatsWakeupThread, 1);
     if (tv_wakeup == NULL) {
-        SCLogError(SC_ERR_THREAD_CREATE, "TmThreadCreateMgmtThread "
+        FatalError(SC_ERR_FATAL, "TmThreadCreateMgmtThread "
                    "failed");
-        exit(EXIT_FAILURE);
     }
 
     if (TmThreadSpawn(tv_wakeup) != 0) {
-        SCLogError(SC_ERR_THREAD_SPAWN, "TmThreadSpawn failed for "
+        FatalError(SC_ERR_FATAL, "TmThreadSpawn failed for "
                    "StatsWakeupThread");
-        exit(EXIT_FAILURE);
     }
 
     /* spawn the stats mgmt thread */
     tv_mgmt = TmThreadCreateMgmtThread(thread_name_counter_stats,
                                        StatsMgmtThread, 1);
     if (tv_mgmt == NULL) {
-        SCLogError(SC_ERR_THREAD_CREATE,
-                   "TmThreadCreateMgmtThread failed");
-        exit(EXIT_FAILURE);
+                   FatalError(SC_ERR_FATAL, "TmThreadCreateMgmtThread failed");
     }
 
     if (TmThreadSpawn(tv_mgmt) != 0) {
-        SCLogError(SC_ERR_THREAD_SPAWN, "TmThreadSpawn failed for "
+        FatalError(SC_ERR_FATAL, "TmThreadSpawn failed for "
                    "StatsWakeupThread");
-        exit(EXIT_FAILURE);
     }
 
     SCReturn;
@@ -1000,7 +996,7 @@ uint16_t StatsRegisterMaxCounter(const char *name, struct ThreadVars_ *tv)
  */
 uint16_t StatsRegisterGlobalCounter(const char *name, uint64_t (*Func)(void))
 {
-#ifdef UNITTESTS
+#if defined (UNITTESTS) || defined (FUZZ)
     if (stats_ctx == NULL)
         return 0;
 #else

@@ -141,7 +141,6 @@ int LiveRegisterDevice(const char *dev)
     SC_ATOMIC_INIT(pd->pkts);
     SC_ATOMIC_INIT(pd->drop);
     SC_ATOMIC_INIT(pd->invalid_checksums);
-    pd->ignore_checksum = 0;
     pd->id = LiveGetDeviceCount();
     TAILQ_INSERT_TAIL(&live_devices, pd, next);
 
@@ -364,9 +363,6 @@ int LiveDeviceListClean()
 
         if (pd->dev)
             SCFree(pd->dev);
-        SC_ATOMIC_DESTROY(pd->pkts);
-        SC_ATOMIC_DESTROY(pd->drop);
-        SC_ATOMIC_DESTROY(pd->invalid_checksums);
         LiveDevFreeStorage(pd);
         SCFree(pd);
     }

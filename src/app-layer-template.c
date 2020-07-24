@@ -1,4 +1,4 @@
-/* Copyright (C) 2015 Open Information Security Foundation
+/* Copyright (C) 2015-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -41,7 +41,7 @@
 #include "app-layer-template.h"
 
 #include "util-unittest.h"
-
+#include "util-validate.h"
 
 /* The default port to probe for echo traffic if not provided in the
  * configuration file. */
@@ -237,7 +237,7 @@ static AppProto TemplateProbingParserTc(Flow *f, uint8_t direction,
     return ALPROTO_UNKNOWN;
 }
 
-static int TemplateParseRequest(Flow *f, void *statev,
+static AppLayerResult TemplateParseRequest(Flow *f, void *statev,
     AppLayerParserState *pstate, const uint8_t *input, uint32_t input_len,
     void *local_data, const uint8_t flags)
 {
@@ -245,16 +245,22 @@ static int TemplateParseRequest(Flow *f, void *statev,
 
     SCLogNotice("Parsing template request: len=%"PRIu32, input_len);
 
-    /* Likely connection closed, we can just return here. */
-    if ((input == NULL || input_len == 0) &&
-        AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
-        return 0;
-    }
-
-    /* Probably don't want to create a transaction in this case
-     * either. */
-    if (input == NULL || input_len == 0) {
-        return 0;
+    if (input == NULL) {
+        if (AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
+            /* This is a signal that the stream is done. Do any
+             * cleanup if needed. Usually nothing is required here. */
+            SCReturnStruct(APP_LAYER_OK);
+        } else if (flags & STREAM_GAP) {
+            /* This is a signal that there has been a gap in the
+             * stream. This only needs to be handled if gaps were
+             * enabled during protocol registration. The input_len
+             * contains the size of the gap. */
+            SCReturnStruct(APP_LAYER_OK);
+        }
+        /* This should not happen. If input is NULL, one of the above should be
+         * true. */
+        DEBUG_VALIDATE_BUG_ON(true);
+        SCReturnStruct(APP_LAYER_ERROR);
     }
 
     /* Normally you would parse out data here and store it in the
@@ -302,10 +308,10 @@ static int TemplateParseRequest(Flow *f, void *statev,
     }
 
 end:
-    return 0;
+    SCReturnStruct(APP_LAYER_OK);
 }
 
-static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pstate,
+static AppLayerResult TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pstate,
     const uint8_t *input, uint32_t input_len, void *local_data,
     const uint8_t flags)
 {
@@ -317,13 +323,13 @@ static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pst
     /* Likely connection closed, we can just return here. */
     if ((input == NULL || input_len == 0) &&
         AppLayerParserStateIssetFlag(pstate, APP_LAYER_PARSER_EOF)) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Probably don't want to create a transaction in this case
      * either. */
     if (input == NULL || input_len == 0) {
-        return 0;
+        SCReturnStruct(APP_LAYER_OK);
     }
 
     /* Look up the existing transaction for this response. In the case
@@ -371,7 +377,7 @@ static int TemplateParseResponse(Flow *f, void *statev, AppLayerParserState *pst
     tx->response_done = 1;
 
 end:
-    return 0;
+    SCReturnStruct(APP_LAYER_OK);
 }
 
 static uint64_t TemplateGetTxCnt(void *statev)
@@ -398,18 +404,6 @@ static void *TemplateGetTx(void *statev, uint64_t tx_id)
 
     SCLogNotice("Transaction ID %"PRIu64" not found.", tx_id);
     return NULL;
-}
-
-static void TemplateSetTxLogged(void *state, void *vtx, LoggerId logged)
-{
-    TemplateTransaction *tx = (TemplateTransaction *)vtx;
-    tx->logged = logged;
-}
-
-static LoggerId TemplateGetTxLogged(void *state, void *vtx)
-{
-    const TemplateTransaction *tx = (TemplateTransaction *)vtx;
-    return tx->logged;
 }
 
 /**
@@ -451,6 +445,15 @@ static int TemplateGetStateProgress(void *txv, uint8_t direction)
     }
 
     return 0;
+}
+
+/**
+ * \brief retrieve the tx data used for logging, config, detection
+ */
+static AppLayerTxData *TemplateGetTxData(void *vtx)
+{
+    TemplateTransaction *tx = vtx;
+    return &tx->tx_data;
 }
 
 /**
@@ -543,9 +546,6 @@ void RegisterTemplateParsers(void)
         AppLayerParserRegisterTxFreeFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateStateTxFree);
 
-        AppLayerParserRegisterLoggerFuncs(IPPROTO_TCP, ALPROTO_TEMPLATE,
-            TemplateGetTxLogged, TemplateSetTxLogged);
-
         /* Register a function to return the current transaction count. */
         AppLayerParserRegisterGetTxCnt(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetTxCnt);
@@ -557,6 +557,8 @@ void RegisterTemplateParsers(void)
             ALPROTO_TEMPLATE, TemplateGetStateProgress);
         AppLayerParserRegisterGetTx(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetTx);
+        AppLayerParserRegisterTxDataFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
+            TemplateGetTxData);
 
         /* What is this being registered for? */
         AppLayerParserRegisterDetectStateFuncs(IPPROTO_TCP, ALPROTO_TEMPLATE,
@@ -568,6 +570,11 @@ void RegisterTemplateParsers(void)
             TemplateStateGetEventInfoById);
         AppLayerParserRegisterGetEventsFunc(IPPROTO_TCP, ALPROTO_TEMPLATE,
             TemplateGetEvents);
+
+        /* Leave this is if you parser can handle gaps, otherwise
+         * remove. */
+        AppLayerParserRegisterOptionFlags(IPPROTO_TCP, ALPROTO_TEMPLATE,
+            APP_LAYER_PARSER_OPT_ACCEPT_GAPS);
     }
     else {
         SCLogNotice("Template protocol parsing disabled.");

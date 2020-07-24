@@ -42,15 +42,14 @@
 #include "util-print.h"
 
 #define PARSE_REGEX         "(.*),(.*)"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 int DetectFlowvarMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectFlowvarSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectFlowvarPostMatch(DetectEngineThreadCtx *det_ctx,
         Packet *p, const Signature *s, const SigMatchCtx *ctx);
-static void DetectFlowvarDataFree(void *ptr);
+static void DetectFlowvarDataFree(DetectEngineCtx *, void *ptr);
 
 void DetectFlowvarRegister (void)
 {
@@ -67,7 +66,7 @@ void DetectFlowvarRegister (void)
     sigmatch_table[DETECT_FLOWVAR_POSTMATCH].Free  = DetectFlowvarDataFree;
     sigmatch_table[DETECT_FLOWVAR_POSTMATCH].RegisterTests  = NULL;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /**
@@ -75,7 +74,7 @@ void DetectFlowvarRegister (void)
  *
  * \param cd pointer to DetectCotentData
  */
-static void DetectFlowvarDataFree(void *ptr)
+static void DetectFlowvarDataFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr == NULL)
         SCReturn;
@@ -126,7 +125,7 @@ static int DetectFlowvarSetup (DetectEngineCtx *de_ctx, Signature *s, const char
     uint16_t contentlen = 0;
     uint32_t contentflags = s->init_data->negated ? DETECT_CONTENT_NEGATED : 0;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret != 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "\"%s\" is not a valid setting for flowvar.", rawstr);
         return -1;
@@ -191,7 +190,7 @@ static int DetectFlowvarSetup (DetectEngineCtx *de_ctx, Signature *s, const char
 
 error:
     if (fd != NULL)
-        DetectFlowvarDataFree(fd);
+        DetectFlowvarDataFree(de_ctx, fd);
     if (sm != NULL)
         SCFree(sm);
     if (content != NULL)
@@ -256,7 +255,7 @@ int DetectVarStoreMatch(DetectEngineThreadCtx *det_ctx,
 /** \brief Setup a post-match for flowvar storage
  *  We're piggyback riding the DetectFlowvarData struct
  */
-int DetectFlowvarPostMatchSetup(Signature *s, uint32_t idx)
+int DetectFlowvarPostMatchSetup(DetectEngineCtx *de_ctx, Signature *s, uint32_t idx)
 {
     SigMatch *sm = NULL;
     DetectFlowvarData *fv = NULL;
@@ -280,7 +279,7 @@ int DetectFlowvarPostMatchSetup(Signature *s, uint32_t idx)
     return 0;
 error:
     if (fv != NULL)
-        DetectFlowvarDataFree(fv);
+        DetectFlowvarDataFree(de_ctx, fv);
     return -1;
 }
 

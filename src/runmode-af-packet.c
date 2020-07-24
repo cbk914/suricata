@@ -1,4 +1,4 @@
-/* Copyright (C) 2011-2016 Open Information Security Foundation
+/* Copyright (C) 2011-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -54,6 +54,7 @@
 #include "util-runmodes.h"
 #include "util-ioctl.h"
 #include "util-ebpf.h"
+#include "util-byte.h"
 
 #include "source-af-packet.h"
 
@@ -88,7 +89,7 @@ static void AFPDerefConfig(void *conf)
 {
     AFPIfaceConfig *pfp = (AFPIfaceConfig *)conf;
     /* Pcap config is used only once but cost of this low. */
-    if (SC_ATOMIC_SUB(pfp->ref, 1) == 0) {
+    if (SC_ATOMIC_SUB(pfp->ref, 1) == 1) {
         SCFree(pfp);
     }
 }
@@ -194,7 +195,11 @@ static void *ParseAFPConfig(const char *iface)
             if (strcmp(threadsstr, "auto") == 0) {
                 aconf->threads = 0;
             } else {
-                aconf->threads = atoi(threadsstr);
+                if (StringParseInt32(&aconf->threads, 10, 0, (const char *)threadsstr) < 0) {
+                    SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid number of "
+                                 "threads, resetting to default");
+                    aconf->threads = 0;
+                }
             }
         }
     }
@@ -289,8 +294,11 @@ static void *ParseAFPConfig(const char *iface)
     if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-id", &tmpclusterid) != 1) {
         aconf->cluster_id = (uint16_t)(cluster_id_auto++);
     } else {
-        aconf->cluster_id = (uint16_t)atoi(tmpclusterid);
-        SCLogDebug("Going to use cluster-id %" PRId32, aconf->cluster_id);
+        if (StringParseUint16(&aconf->cluster_id, 10, 0, (const char *)tmpclusterid) < 0) {
+            SCLogWarning(SC_ERR_INVALID_VALUE, "Invalid cluster_id, resetting to 0");
+            aconf->cluster_id = 0;
+        }
+        SCLogDebug("Going to use cluster-id %" PRIu16, aconf->cluster_id);
     }
 
     if (ConfGetChildValueWithDefault(if_root, if_default, "cluster-type", &tmpctype) != 1) {
@@ -807,8 +815,7 @@ int RunModeIdsAFPAutoFp(void)
     SCLogDebug("live_dev %s", live_dev);
 
     if (AFPPeersListInit() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to init peers list.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to init peers list.");
     }
 
     ret = RunModeSetLiveCaptureAutoFp(ParseAFPConfig,
@@ -817,14 +824,12 @@ int RunModeIdsAFPAutoFp(void)
                               "DecodeAFP", thread_name_autofp,
                               live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     /* In IPS mode each threads must have a peer */
     if (AFPPeersListCheck() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Some IPS capture threads did not peer.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Some IPS capture threads did not peer.");
     }
 
     SCLogDebug("RunModeIdsAFPAutoFp initialised");
@@ -849,8 +854,7 @@ int RunModeIdsAFPSingle(void)
     (void)ConfGet("af-packet.live-interface", &live_dev);
 
     if (AFPPeersListInit() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to init peers list.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to init peers list.");
     }
 
     ret = RunModeSetLiveCaptureSingle(ParseAFPConfig,
@@ -859,14 +863,12 @@ int RunModeIdsAFPSingle(void)
                                     "DecodeAFP", thread_name_single,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     /* In IPS mode each threads must have a peer */
     if (AFPPeersListCheck() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Some IPS capture threads did not peer.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Some IPS capture threads did not peer.");
     }
 
     SCLogDebug("RunModeIdsAFPSingle initialised");
@@ -894,8 +896,7 @@ int RunModeIdsAFPWorkers(void)
     (void)ConfGet("af-packet.live-interface", &live_dev);
 
     if (AFPPeersListInit() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to init peers list.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to init peers list.");
     }
 
     ret = RunModeSetLiveCaptureWorkers(ParseAFPConfig,
@@ -904,14 +905,12 @@ int RunModeIdsAFPWorkers(void)
                                     "DecodeAFP", thread_name_workers,
                                     live_dev);
     if (ret != 0) {
-        SCLogError(SC_ERR_RUNMODE, "Unable to start runmode");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Unable to start runmode");
     }
 
     /* In IPS mode each threads must have a peer */
     if (AFPPeersListCheck() != TM_ECODE_OK) {
-        SCLogError(SC_ERR_RUNMODE, "Some IPS capture threads did not peer.");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL, "Some IPS capture threads did not peer.");
     }
 
     SCLogDebug("RunModeIdsAFPWorkers initialised");

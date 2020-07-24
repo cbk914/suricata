@@ -47,7 +47,7 @@ static int DetectAckSetup(DetectEngineCtx *, Signature *, const char *);
 static int DetectAckMatch(DetectEngineThreadCtx *,
                           Packet *, const Signature *, const SigMatchCtx *);
 static void DetectAckRegisterTests(void);
-static void DetectAckFree(void *);
+static void DetectAckFree(DetectEngineCtx *, void *);
 static int PrefilterSetupTcpAck(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
 static bool PrefilterTcpAckIsPrefilterable(const Signature *s);
 
@@ -56,7 +56,7 @@ void DetectAckRegister(void)
     sigmatch_table[DETECT_ACK].name = "tcp.ack";
     sigmatch_table[DETECT_ACK].alias = "ack";
     sigmatch_table[DETECT_ACK].desc = "check for a specific TCP acknowledgement number";
-    sigmatch_table[DETECT_ACK].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#ack";
+    sigmatch_table[DETECT_ACK].url = "/rules/header-keywords.html#ack";
     sigmatch_table[DETECT_ACK].Match = DetectAckMatch;
     sigmatch_table[DETECT_ACK].Setup = DetectAckSetup;
     sigmatch_table[DETECT_ACK].Free = DetectAckFree;
@@ -119,7 +119,7 @@ static int DetectAckSetup(DetectEngineCtx *de_ctx, Signature *s, const char *opt
 
     sm->type = DETECT_ACK;
 
-    if (-1 == ByteExtractStringUint32(&data->ack, 10, 0, optstr)) {
+    if (StringParseUint32(&data->ack, 10, 0, optstr) < 0) {
         goto error;
     }
     sm->ctx = (SigMatchCtx*)data;
@@ -133,7 +133,7 @@ error:
     if (data)
         SCFree(data);
     if (sm)
-        SigMatchFree(sm);
+        SigMatchFree(de_ctx, sm);
     return -1;
 
 }
@@ -144,7 +144,7 @@ error:
  *
  * \param data pointer to ack configuration data
  */
-static void DetectAckFree(void *ptr)
+static void DetectAckFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectAckData *data = (DetectAckData *)ptr;
     SCFree(data);

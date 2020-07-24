@@ -132,8 +132,6 @@ void HostFree(Host *h)
 {
     if (h != NULL) {
         HostClearMemory(h);
-
-        SC_ATOMIC_DESTROY(h->use_cnt);
         SCMutexDestroy(&h->m);
         SCFree(h);
         (void) SC_ATOMIC_SUB(host_memuse, g_host_size);
@@ -211,7 +209,7 @@ void HostInitConfig(char quiet)
     }
     if ((ConfGetValue("host.hash-size", &conf_val)) == 1)
     {
-        if (ByteExtractStringUint32(&configval, 10, strlen(conf_val),
+        if (StringParseUint32(&configval, 10, strlen(conf_val),
                                     conf_val) > 0) {
             host_config.hash_size = configval;
         }
@@ -219,7 +217,7 @@ void HostInitConfig(char quiet)
 
     if ((ConfGetValue("host.prealloc", &conf_val)) == 1)
     {
-        if (ByteExtractStringUint32(&configval, 10, strlen(conf_val),
+        if (StringParseUint32(&configval, 10, strlen(conf_val),
                                     conf_val) > 0) {
             host_config.prealloc = configval;
         } else {
@@ -243,8 +241,8 @@ void HostInitConfig(char quiet)
     }
     host_hash = SCMallocAligned(host_config.hash_size * sizeof(HostHashRow), CLS);
     if (unlikely(host_hash == NULL)) {
-        SCLogError(SC_ERR_FATAL, "Fatal error encountered in HostInitConfig. Exiting...");
-        exit(EXIT_FAILURE);
+        FatalError(SC_ERR_FATAL,
+                   "Fatal error encountered in HostInitConfig. Exiting...");
     }
     memset(host_hash, 0, host_config.hash_size * sizeof(HostHashRow));
 
@@ -334,12 +332,6 @@ void HostShutdown(void)
     }
     (void) SC_ATOMIC_SUB(host_memuse, host_config.hash_size * sizeof(HostHashRow));
     HostQueueDestroy(&host_spare_q);
-
-    SC_ATOMIC_DESTROY(host_prune_idx);
-    SC_ATOMIC_DESTROY(host_memuse);
-    SC_ATOMIC_DESTROY(host_counter);
-    SC_ATOMIC_DESTROY(host_config.memcap);
-    //SC_ATOMIC_DESTROY(flow_flags);
     return;
 }
 

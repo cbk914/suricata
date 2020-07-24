@@ -1,4 +1,4 @@
-/* Copyright (C) 2018-2019 Open Information Security Foundation
+/* Copyright (C) 2018-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -39,23 +39,22 @@
 #include "util-print.h"
 
 #define PARSE_REGEX         "([a-z]+)(?:,\\s*([\\-_A-z0-9\\s\\.]+)){1,4}"
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 int DetectDatasetMatch (ThreadVars *, DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectDatasetSetup (DetectEngineCtx *, Signature *, const char *);
-void DetectDatasetFree (void *);
+void DetectDatasetFree (DetectEngineCtx *, void *);
 
 void DetectDatasetRegister (void)
 {
     sigmatch_table[DETECT_DATASET].name = "dataset";
     sigmatch_table[DETECT_DATASET].desc = "match sticky buffer against datasets (experimental)";
-    sigmatch_table[DETECT_DATASET].url = DOC_URL DOC_VERSION "/rules/dataset-keywords.html#dataset";
+    sigmatch_table[DETECT_DATASET].url = "/rules/dataset-keywords.html#dataset";
     sigmatch_table[DETECT_DATASET].Setup = DetectDatasetSetup;
     sigmatch_table[DETECT_DATASET].Free  = DetectDatasetFree;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /*
@@ -408,7 +407,7 @@ error:
     return -1;
 }
 
-void DetectDatasetFree (void *ptr)
+void DetectDatasetFree (DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectDatasetData *fd = (DetectDatasetData *)ptr;
     if (fd == NULL)

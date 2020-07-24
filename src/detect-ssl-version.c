@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2016 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -57,8 +57,7 @@
 #define PARSE_REGEX  "^\\s*(!?[A-z0-9.]+)\\s*,?\\s*(!?[A-z0-9.]+)?\\s*\\,?\\s*" \
         "(!?[A-z0-9.]+)?\\s*,?\\s*(!?[A-z0-9.]+)?\\s*,?\\s*(!?[A-z0-9.]+)?\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectSslVersionMatch(DetectEngineThreadCtx *,
         Flow *, uint8_t, void *, void *,
@@ -67,7 +66,7 @@ static int DetectSslVersionSetup(DetectEngineCtx *, Signature *, const char *);
 #ifdef UNITTESTS
 static void DetectSslVersionRegisterTests(void);
 #endif
-static void DetectSslVersionFree(void *);
+static void DetectSslVersionFree(DetectEngineCtx *, void *);
 static int g_tls_generic_list_id = 0;
 
 /**
@@ -77,14 +76,14 @@ void DetectSslVersionRegister(void)
 {
     sigmatch_table[DETECT_AL_SSL_VERSION].name = "ssl_version";
     sigmatch_table[DETECT_AL_SSL_VERSION].desc = "match version of SSL/TLS record";
-    sigmatch_table[DETECT_AL_SSL_VERSION].url = DOC_URL DOC_VERSION "/rules/tls-keywords.html#ssl-version";
+    sigmatch_table[DETECT_AL_SSL_VERSION].url = "/rules/tls-keywords.html#ssl-version";
     sigmatch_table[DETECT_AL_SSL_VERSION].AppLayerTxMatch = DetectSslVersionMatch;
     sigmatch_table[DETECT_AL_SSL_VERSION].Setup = DetectSslVersionSetup;
     sigmatch_table[DETECT_AL_SSL_VERSION].Free  = DetectSslVersionFree;
 #ifdef UNITTESTS
     sigmatch_table[DETECT_AL_SSL_VERSION].RegisterTests = DetectSslVersionRegisterTests;
 #endif
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 
     g_tls_generic_list_id = DetectBufferTypeRegister("tls_generic");
 }
@@ -187,29 +186,25 @@ static int DetectSslVersionMatch(DetectEngineThreadCtx *det_ctx,
  * \brief This function is used to parse ssl_version data passed via
  *        keyword: "ssl_version"
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param str Pointer to the user provided options
  *
  * \retval ssl pointer to DetectSslVersionData on success
  * \retval NULL on failure
  */
-static DetectSslVersionData *DetectSslVersionParse(const char *str)
+static DetectSslVersionData *DetectSslVersionParse(DetectEngineCtx *de_ctx, const char *str)
 {
     DetectSslVersionData *ssl = NULL;
-	#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, str, strlen(str), 0, 0,
-                    ov, MAX_SUBSTRINGS);
-
+    ret = DetectParsePcreExec(&parse_regex, str, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1 || ret > 5) {
         SCLogError(SC_ERR_PCRE_MATCH, "invalid ssl_version option");
         goto error;
     }
 
     if (ret > 1) {
-        const char *str_ptr;
-        char *orig;
         uint8_t found = 0, neg = 0;
         char *tmp_str;
 
@@ -220,7 +215,8 @@ static DetectSslVersionData *DetectSslVersionParse(const char *str)
 
         int i;
         for (i = 1; i < ret; i++) {
-            res = pcre_get_substring((char *) str, ov, MAX_SUBSTRINGS, i, &str_ptr);
+            char ver_ptr[64];
+            res = pcre_copy_substring((char *) str, ov, MAX_SUBSTRINGS, i, ver_ptr, sizeof(ver_ptr));
             if (res < 0) {
                 SCLogError(SC_ERR_PCRE_GET_SUBSTRING, "pcre_get_substring failed");
                 if (found == 0)
@@ -228,11 +224,7 @@ static DetectSslVersionData *DetectSslVersionParse(const char *str)
                 break;
             }
 
-            orig = SCStrdup((char*) str_ptr);
-            if (unlikely(orig == NULL)) {
-                goto error;
-            }
-            tmp_str = orig;
+            tmp_str = ver_ptr;
 
             /* Let's see if we need to scape "'s */
             if (tmp_str[0] == '"') {
@@ -271,20 +263,16 @@ static DetectSslVersionData *DetectSslVersionParse(const char *str)
                 if (neg == 1)
                     ssl->data[TLS13].flags |= DETECT_SSL_VERSION_NEGATED;
             }  else if (strcmp(tmp_str, "") == 0) {
-                SCFree(orig);
                 if (found == 0)
                     goto error;
                 break;
             } else {
                 SCLogError(SC_ERR_INVALID_VALUE, "Invalid value");
-                SCFree(orig);
                 goto error;
             }
 
             found = 1;
             neg = 0;
-            SCFree(orig);
-            pcre_free_substring(str_ptr);
         }
     }
 
@@ -292,7 +280,7 @@ static DetectSslVersionData *DetectSslVersionParse(const char *str)
 
 error:
     if (ssl != NULL)
-        DetectSslVersionFree(ssl);
+        DetectSslVersionFree(de_ctx, ssl);
     return NULL;
 
 }
@@ -316,7 +304,7 @@ static int DetectSslVersionSetup (DetectEngineCtx *de_ctx, Signature *s, const c
     if (DetectSignatureSetAppProto(s, ALPROTO_TLS) != 0)
         return -1;
 
-    ssl = DetectSslVersionParse(str);
+    ssl = DetectSslVersionParse(de_ctx, str);
     if (ssl == NULL)
         goto error;
 
@@ -334,7 +322,7 @@ static int DetectSslVersionSetup (DetectEngineCtx *de_ctx, Signature *s, const c
 
 error:
     if (ssl != NULL)
-        DetectSslVersionFree(ssl);
+        DetectSslVersionFree(de_ctx, ssl);
     if (sm != NULL)
         SCFree(sm);
     return -1;
@@ -345,7 +333,7 @@ error:
  *
  * \param id_d pointer to DetectSslVersionData
  */
-void DetectSslVersionFree(void *ptr)
+void DetectSslVersionFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL)
         SCFree(ptr);

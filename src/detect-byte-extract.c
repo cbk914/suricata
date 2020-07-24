@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -86,12 +86,11 @@
     "(?:(?:,\\s*([^\\s,]+)\\s*)|(?:,\\s*([^\\s,]+)\\s+([^\\s,]+)\\s*))?" \
     "$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectByteExtractSetup(DetectEngineCtx *, Signature *, const char *);
 static void DetectByteExtractRegisterTests(void);
-static void DetectByteExtractFree(void *);
+static void DetectByteExtractFree(DetectEngineCtx *, void *);
 
 /**
  * \brief Registers the keyword handlers for the "byte_extract" keyword.
@@ -100,13 +99,13 @@ void DetectByteExtractRegister(void)
 {
     sigmatch_table[DETECT_BYTE_EXTRACT].name = "byte_extract";
     sigmatch_table[DETECT_BYTE_EXTRACT].desc = "extract <num of bytes> at a particular <offset> and store it in <var_name>";
-    sigmatch_table[DETECT_BYTE_EXTRACT].url = DOC_URL DOC_VERSION "/rules/payload-keywords.html#byte-extract";
+    sigmatch_table[DETECT_BYTE_EXTRACT].url = "/rules/payload-keywords.html#byte-extract";
     sigmatch_table[DETECT_BYTE_EXTRACT].Match = NULL;
     sigmatch_table[DETECT_BYTE_EXTRACT].Setup = DetectByteExtractSetup;
     sigmatch_table[DETECT_BYTE_EXTRACT].Free = DetectByteExtractFree;
     sigmatch_table[DETECT_BYTE_EXTRACT].RegisterTests = DetectByteExtractRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 int DetectByteExtractDoMatch(DetectEngineThreadCtx *det_ctx, const SigMatchData *smd,
@@ -203,21 +202,22 @@ int DetectByteExtractDoMatch(DetectEngineThreadCtx *det_ctx, const SigMatchData 
  * \internal
  * \brief Used to parse byte_extract arg.
  *
+ * \param de_ctx Pointer to the detection engine context
  * \arg The argument to parse.
  *
  * \param bed On success an instance containing the parsed data.
  *            On failure, NULL.
  */
-static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
+static inline DetectByteExtractData *DetectByteExtractParse(DetectEngineCtx *de_ctx, const char *arg)
 {
     DetectByteExtractData *bed = NULL;
+#undef MAX_SUBSTRINGS
 #define MAX_SUBSTRINGS 100
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     int i = 0;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, arg,
-                    strlen(arg), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, arg,  0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 3 || ret > 19) {
         SCLogError(SC_ERR_PCRE_PARSE, "parse error, ret %" PRId32
                    ", string \"%s\"", ret, arg);
@@ -240,7 +240,12 @@ static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
                    "for arg 1 for byte_extract");
         goto error;
     }
-    bed->nbytes = atoi(nbytes_str);
+    if (StringParseUint8(&bed->nbytes, 10, 0,
+                               (const char *)nbytes_str) < 0) {
+        SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid value for number of bytes"
+                   " to be extracted: \"%s\".", nbytes_str);
+        goto error;
+    }
 
     /* offset */
     char offset_str[64] = "";
@@ -251,10 +256,9 @@ static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
                    "for arg 2 for byte_extract");
         goto error;
     }
-    int offset = atoi(offset_str);
-    if (offset < -65535 || offset > 65535) {
-        SCLogError(SC_ERR_INVALID_SIGNATURE, "byte_extract offset invalid - %d.  "
-                   "The right offset range is -65535 to 65535", offset);
+    int32_t offset;
+    if (StringParseI32RangeCheck(&offset, 10, 0, (const char *)offset_str, -65535, 65535) < 0) {
+        SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid value for offset: \"%s\".", offset_str);
         goto error;
     }
     bed->offset = offset;
@@ -307,14 +311,13 @@ static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
                            "for arg %d for byte_extract", i);
                 goto error;
             }
-            int multiplier = atoi(multiplier_str);
-            if (multiplier < DETECT_BYTE_EXTRACT_MULTIPLIER_MIN_LIMIT ||
-                multiplier > DETECT_BYTE_EXTRACT_MULTIPLIER_MAX_LIMIT) {
-                SCLogError(SC_ERR_INVALID_SIGNATURE, "multipiler_value invalid "
-                           "- %d.  The range is %d-%d",
-                           multiplier,
-                           DETECT_BYTE_EXTRACT_MULTIPLIER_MIN_LIMIT,
-                           DETECT_BYTE_EXTRACT_MULTIPLIER_MAX_LIMIT);
+            int32_t multiplier;
+            if (StringParseI32RangeCheck(&multiplier, 10, 0,
+                                 (const char *)multiplier_str,
+                                 DETECT_BYTE_EXTRACT_MULTIPLIER_MIN_LIMIT,
+                                 DETECT_BYTE_EXTRACT_MULTIPLIER_MAX_LIMIT) < 0) {
+                SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid value for"
+                        "multiplier: \"%s\".", multiplier_str);
                 goto error;
             }
             bed->multiplier_value = multiplier;
@@ -411,7 +414,12 @@ static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
                            "for arg %d in byte_extract", i);
                 goto error;
             }
-            bed->align_value = atoi(align_str);
+            if (StringParseUint8(&bed->align_value, 10, 0,
+                                       (const char *)align_str) < 0) {
+                SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid align_value: "
+                           "\"%s\".", align_str);
+                goto error;
+            }
             if (!(bed->align_value == 2 || bed->align_value == 4)) {
                 SCLogError(SC_ERR_INVALID_SIGNATURE, "Invalid align_value for "
                            "byte_extract - \"%d\"", bed->align_value);
@@ -489,7 +497,7 @@ static inline DetectByteExtractData *DetectByteExtractParse(const char *arg)
     return bed;
  error:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(de_ctx, bed);
     return NULL;
 }
 
@@ -513,7 +521,7 @@ static int DetectByteExtractSetup(DetectEngineCtx *de_ctx, Signature *s, const c
     DetectByteExtractData *data = NULL;
     int ret = -1;
 
-    data = DetectByteExtractParse(arg);
+    data = DetectByteExtractParse(de_ctx, arg);
     if (data == NULL)
         goto error;
 
@@ -528,7 +536,7 @@ static int DetectByteExtractSetup(DetectEngineCtx *de_ctx, Signature *s, const c
         if (data->flags & DETECT_BYTE_EXTRACT_FLAG_RELATIVE) {
             prev_pm = DetectGetLastSMFromLists(s, DETECT_CONTENT, DETECT_PCRE,
                     DETECT_BYTETEST, DETECT_BYTEJUMP, DETECT_BYTE_EXTRACT,
-                    DETECT_ISDATAAT, -1);
+                    DETECT_BYTEMATH, DETECT_ISDATAAT, -1);
             if (prev_pm == NULL) {
                 sm_list = DETECT_SM_LIST_PMATCH;
             } else {
@@ -548,7 +556,7 @@ static int DetectByteExtractSetup(DetectEngineCtx *de_ctx, Signature *s, const c
         prev_pm = DetectGetLastSMFromLists(s,
                 DETECT_CONTENT, DETECT_PCRE,
                 DETECT_BYTETEST, DETECT_BYTEJUMP, DETECT_BYTE_EXTRACT,
-                DETECT_ISDATAAT, -1);
+                DETECT_BYTEMATH, DETECT_ISDATAAT, -1);
         if (prev_pm == NULL) {
             sm_list = DETECT_SM_LIST_PMATCH;
         } else {
@@ -613,7 +621,7 @@ static int DetectByteExtractSetup(DetectEngineCtx *de_ctx, Signature *s, const c
     ret = 0;
     return ret;
  error:
-    DetectByteExtractFree(data);
+    DetectByteExtractFree(de_ctx, data);
     return ret;
 }
 
@@ -622,7 +630,7 @@ static int DetectByteExtractSetup(DetectEngineCtx *de_ctx, Signature *s, const c
  *
  * \param ptr Instance of DetectByteExtractData to be freed.
  */
-static void DetectByteExtractFree(void *ptr)
+static void DetectByteExtractFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     if (ptr != NULL) {
         DetectByteExtractData *bed = ptr;
@@ -672,7 +680,7 @@ static int DetectByteExtractTest01(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one");
     if (bed == NULL)
         goto end;
 
@@ -690,7 +698,7 @@ static int DetectByteExtractTest01(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -698,7 +706,7 @@ static int DetectByteExtractTest02(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, relative");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, relative");
     if (bed == NULL)
         goto end;
 
@@ -716,7 +724,7 @@ static int DetectByteExtractTest02(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -724,7 +732,7 @@ static int DetectByteExtractTest03(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, multiplier 10");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, multiplier 10");
     if (bed == NULL)
         goto end;
 
@@ -742,7 +750,7 @@ static int DetectByteExtractTest03(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -750,7 +758,7 @@ static int DetectByteExtractTest04(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, relative, multiplier 10");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, relative, multiplier 10");
     if (bed == NULL)
         goto end;
 
@@ -769,7 +777,7 @@ static int DetectByteExtractTest04(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -777,7 +785,7 @@ static int DetectByteExtractTest05(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, big");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, big");
     if (bed == NULL)
         goto end;
 
@@ -795,7 +803,7 @@ static int DetectByteExtractTest05(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -803,7 +811,7 @@ static int DetectByteExtractTest06(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, little");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, little");
     if (bed == NULL)
         goto end;
 
@@ -821,7 +829,7 @@ static int DetectByteExtractTest06(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -829,7 +837,7 @@ static int DetectByteExtractTest07(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, dce");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, dce");
     if (bed == NULL)
         goto end;
 
@@ -847,7 +855,7 @@ static int DetectByteExtractTest07(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -855,7 +863,7 @@ static int DetectByteExtractTest08(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, string, hex");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, string, hex");
     if (bed == NULL)
         goto end;
 
@@ -873,7 +881,7 @@ static int DetectByteExtractTest08(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -881,7 +889,7 @@ static int DetectByteExtractTest09(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, string, oct");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, string, oct");
     if (bed == NULL)
         goto end;
 
@@ -899,7 +907,7 @@ static int DetectByteExtractTest09(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -907,7 +915,7 @@ static int DetectByteExtractTest10(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, string, dec");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, string, dec");
     if (bed == NULL)
         goto end;
 
@@ -925,7 +933,7 @@ static int DetectByteExtractTest10(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -933,7 +941,7 @@ static int DetectByteExtractTest11(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4");
     if (bed == NULL)
         goto end;
 
@@ -951,7 +959,7 @@ static int DetectByteExtractTest11(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -959,7 +967,7 @@ static int DetectByteExtractTest12(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, relative");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, relative");
     if (bed == NULL)
         goto end;
 
@@ -978,7 +986,7 @@ static int DetectByteExtractTest12(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -986,7 +994,7 @@ static int DetectByteExtractTest13(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, relative, big");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, relative, big");
     if (bed == NULL)
         goto end;
 
@@ -1006,7 +1014,7 @@ static int DetectByteExtractTest13(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1014,7 +1022,7 @@ static int DetectByteExtractTest14(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, relative, dce");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, relative, dce");
     if (bed == NULL)
         goto end;
 
@@ -1034,7 +1042,7 @@ static int DetectByteExtractTest14(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1042,7 +1050,7 @@ static int DetectByteExtractTest15(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, relative, little");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, relative, little");
     if (bed == NULL)
         goto end;
 
@@ -1062,7 +1070,7 @@ static int DetectByteExtractTest15(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1070,7 +1078,7 @@ static int DetectByteExtractTest16(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, relative, little, multiplier 2");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, relative, little, multiplier 2");
     if (bed == NULL)
         goto end;
 
@@ -1091,7 +1099,7 @@ static int DetectByteExtractTest16(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1099,7 +1107,7 @@ static int DetectByteExtractTest17(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "relative, little, "
                                                         "multiplier 2, string hex");
     if (bed != NULL)
@@ -1108,7 +1116,7 @@ static int DetectByteExtractTest17(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1116,7 +1124,7 @@ static int DetectByteExtractTest18(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "relative, little, "
                                                         "multiplier 2, "
                                                         "relative");
@@ -1126,7 +1134,7 @@ static int DetectByteExtractTest18(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1134,7 +1142,7 @@ static int DetectByteExtractTest19(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "relative, little, "
                                                         "multiplier 2, "
                                                         "little");
@@ -1144,7 +1152,7 @@ static int DetectByteExtractTest19(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1152,7 +1160,7 @@ static int DetectByteExtractTest20(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "relative, "
                                                         "multiplier 2, "
                                                         "align 2");
@@ -1162,7 +1170,7 @@ static int DetectByteExtractTest20(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1170,7 +1178,7 @@ static int DetectByteExtractTest21(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "multiplier 2, "
                                                         "relative, "
                                                         "multiplier 2");
@@ -1180,7 +1188,7 @@ static int DetectByteExtractTest21(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1188,7 +1196,7 @@ static int DetectByteExtractTest22(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "string hex, "
                                                         "relative, "
                                                         "string hex");
@@ -1198,7 +1206,7 @@ static int DetectByteExtractTest22(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1206,7 +1214,7 @@ static int DetectByteExtractTest23(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "string hex, "
                                                         "relative, "
                                                         "string oct");
@@ -1216,7 +1224,7 @@ static int DetectByteExtractTest23(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1224,7 +1232,7 @@ static int DetectByteExtractTest24(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("24, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "24, 2, one, align 4, "
                                                         "string hex, "
                                                         "relative");
     if (bed != NULL)
@@ -1233,7 +1241,7 @@ static int DetectByteExtractTest24(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1241,7 +1249,7 @@ static int DetectByteExtractTest25(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("9, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "9, 2, one, align 4, "
                                                         "little, "
                                                         "relative");
     if (bed != NULL)
@@ -1250,7 +1258,7 @@ static int DetectByteExtractTest25(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1258,7 +1266,7 @@ static int DetectByteExtractTest26(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "little, "
                                                         "relative, "
                                                         "multiplier 65536");
@@ -1268,7 +1276,7 @@ static int DetectByteExtractTest26(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1276,7 +1284,7 @@ static int DetectByteExtractTest27(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, align 4, "
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, align 4, "
                                                         "little, "
                                                         "relative, "
                                                         "multiplier 0");
@@ -1286,7 +1294,7 @@ static int DetectByteExtractTest27(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1294,14 +1302,14 @@ static int DetectByteExtractTest28(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("23, 2, one, string, oct");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "23, 2, one, string, oct");
     if (bed == NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1309,14 +1317,14 @@ static int DetectByteExtractTest29(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("24, 2, one, string, oct");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "24, 2, one, string, oct");
     if (bed != NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1324,14 +1332,14 @@ static int DetectByteExtractTest30(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("20, 2, one, string, dec");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "20, 2, one, string, dec");
     if (bed == NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1339,14 +1347,14 @@ static int DetectByteExtractTest31(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("21, 2, one, string, dec");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "21, 2, one, string, dec");
     if (bed != NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1354,14 +1362,14 @@ static int DetectByteExtractTest32(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("14, 2, one, string, hex");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "14, 2, one, string, hex");
     if (bed == NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -1369,14 +1377,14 @@ static int DetectByteExtractTest33(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("15, 2, one, string, hex");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "15, 2, one, string, hex");
     if (bed != NULL)
         goto end;
 
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -2363,7 +2371,7 @@ static int DetectByteExtractTest43(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "three", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_OFFSET_BE |
+        cd->flags != (DETECT_CONTENT_OFFSET_VAR |
                       DETECT_CONTENT_OFFSET) ||
         cd->offset != bed->local_id) {
         printf("three failed\n");
@@ -2471,7 +2479,7 @@ static int DetectByteExtractTest44(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_OFFSET_BE |
+        cd->flags != (DETECT_CONTENT_OFFSET_VAR |
                       DETECT_CONTENT_OFFSET) ||
         cd->offset != bed1->local_id) {
         printf("four failed\n");
@@ -2486,7 +2494,7 @@ static int DetectByteExtractTest44(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "five", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_OFFSET_BE |
+        cd->flags != (DETECT_CONTENT_OFFSET_VAR |
                       DETECT_CONTENT_OFFSET) ||
         cd->offset != bed2->local_id) {
         printf("five failed\n");
@@ -2584,7 +2592,7 @@ static int DetectByteExtractTest45(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "three", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DEPTH_BE |
+        cd->flags != (DETECT_CONTENT_DEPTH_VAR |
                       DETECT_CONTENT_DEPTH) ||
         cd->depth != bed->local_id ||
         cd->offset != 0) {
@@ -2693,7 +2701,7 @@ static int DetectByteExtractTest46(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DEPTH_BE |
+        cd->flags != (DETECT_CONTENT_DEPTH_VAR |
                       DETECT_CONTENT_DEPTH) ||
         cd->depth != bed1->local_id) {
         printf("four failed\n");
@@ -2708,7 +2716,7 @@ static int DetectByteExtractTest46(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "five", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DEPTH_BE |
+        cd->flags != (DETECT_CONTENT_DEPTH_VAR |
                       DETECT_CONTENT_DEPTH) ||
         cd->depth != bed2->local_id) {
         printf("five failed\n");
@@ -2806,7 +2814,7 @@ static int DetectByteExtractTest47(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "three", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
                       DETECT_CONTENT_DISTANCE) ||
         cd->distance != bed->local_id ||
         cd->offset != 0 ||
@@ -2916,7 +2924,7 @@ static int DetectByteExtractTest48(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
                       DETECT_CONTENT_DISTANCE |
                       DETECT_CONTENT_DISTANCE_NEXT) ||
         cd->distance != bed1->local_id ||
@@ -2934,7 +2942,7 @@ static int DetectByteExtractTest48(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "five", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
                       DETECT_CONTENT_DISTANCE) ||
         cd->distance != bed2->local_id ||
         cd->depth != 0 ||
@@ -3034,7 +3042,7 @@ static int DetectByteExtractTest49(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "three", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_WITHIN) ||
         cd->within != bed->local_id ||
         cd->offset != 0 ||
@@ -3145,7 +3153,7 @@ static int DetectByteExtractTest50(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_WITHIN|
                       DETECT_CONTENT_WITHIN_NEXT) ||
         cd->within != bed1->local_id ||
@@ -3164,7 +3172,7 @@ static int DetectByteExtractTest50(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "five", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_WITHIN) ||
         cd->within != bed2->local_id ||
         cd->depth != 0 ||
@@ -3265,7 +3273,7 @@ static int DetectByteExtractTest51(void)
         goto end;
     }
     btd = (DetectBytetestData *)sm->ctx;
-    if (btd->flags != DETECT_BYTETEST_OFFSET_BE ||
+    if (btd->flags != DETECT_BYTETEST_OFFSET_VAR ||
         btd->value != 10 ||
         btd->offset != 0) {
         printf("three failed\n");
@@ -3371,8 +3379,8 @@ static int DetectByteExtractTest52(void)
         goto end;
     }
     btd = (DetectBytetestData *)sm->ctx;
-    if (btd->flags != (DETECT_BYTETEST_OFFSET_BE |
-                       DETECT_BYTETEST_VALUE_BE) ||
+    if (btd->flags != (DETECT_BYTETEST_OFFSET_VAR |
+                       DETECT_BYTETEST_VALUE_VAR) ||
         btd->value != 0 ||
         btd->offset != 1) {
         printf("three failed\n");
@@ -3386,7 +3394,7 @@ static int DetectByteExtractTest52(void)
         goto end;
     }
     btd = (DetectBytetestData *)sm->ctx;
-    if (btd->flags != DETECT_BYTETEST_OFFSET_BE ||
+    if (btd->flags != DETECT_BYTETEST_OFFSET_VAR ||
         btd->value != 10 ||
         btd->offset != 1) {
         printf("four failed\n");
@@ -3484,7 +3492,7 @@ static int DetectByteExtractTest53(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 0) {
         printf("three failed\n");
         result = 0;
@@ -3589,7 +3597,7 @@ static int DetectByteExtractTest54(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 0) {
         printf("three failed\n");
         result = 0;
@@ -3602,7 +3610,7 @@ static int DetectByteExtractTest54(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 1) {
         printf("four failed\n");
         result = 0;
@@ -3712,8 +3720,8 @@ static int DetectByteExtractTest55(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
-                      DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
+                      DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_DISTANCE |
                       DETECT_CONTENT_WITHIN) ||
         cd->within != bed1->local_id ||
@@ -3859,8 +3867,8 @@ static int DetectByteExtractTest56(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
-                      DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
+                      DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_DISTANCE |
                       DETECT_CONTENT_WITHIN) ||
         cd->within != bed1->local_id ||
@@ -4024,8 +4032,8 @@ static int DetectByteExtractTest57(void)
     }
     cd = (DetectContentData *)sm->ctx;
     if (strncmp((char *)cd->content, "four", cd->content_len) != 0 ||
-        cd->flags != (DETECT_CONTENT_DISTANCE_BE |
-                      DETECT_CONTENT_WITHIN_BE |
+        cd->flags != (DETECT_CONTENT_DISTANCE_VAR |
+                      DETECT_CONTENT_WITHIN_VAR |
                       DETECT_CONTENT_DISTANCE |
                       DETECT_CONTENT_WITHIN) ||
         cd->within != bed1->local_id ||
@@ -4136,7 +4144,7 @@ static int DetectByteExtractTest58(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 0) {
         printf("three failed\n");
         result = 0;
@@ -4149,7 +4157,7 @@ static int DetectByteExtractTest58(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 1) {
         printf("four failed\n");
         result = 0;
@@ -4162,7 +4170,7 @@ static int DetectByteExtractTest58(void)
         goto end;
     }
     isdd = (DetectIsdataatData *)sm->ctx;
-    if (isdd->flags != ISDATAAT_OFFSET_BE ||
+    if (isdd->flags != ISDATAAT_OFFSET_VAR ||
         isdd->dataat != 1) {
         printf("isdataat failed\n");
         result = 0;
@@ -4269,7 +4277,7 @@ static int DetectByteExtractTest59(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 0) {
         printf("three failed\n");
         result = 0;
@@ -4282,7 +4290,7 @@ static int DetectByteExtractTest59(void)
         goto end;
     }
     bjd = (DetectBytejumpData *)sm->ctx;
-    if (bjd->flags != DETECT_BYTEJUMP_OFFSET_BE ||
+    if (bjd->flags != DETECT_CONTENT_OFFSET_VAR ||
         bjd->offset != 1) {
         printf("four failed\n");
         result = 0;
@@ -4295,7 +4303,7 @@ static int DetectByteExtractTest59(void)
         goto end;
     }
     isdd = (DetectIsdataatData *)sm->ctx;
-    if (isdd->flags != (ISDATAAT_OFFSET_BE |
+    if (isdd->flags != (ISDATAAT_OFFSET_VAR |
                         ISDATAAT_RELATIVE) ||
         isdd->dataat != 1) {
         printf("isdataat failed\n");
@@ -4396,7 +4404,7 @@ static int DetectByteExtractTest60(void)
         goto end;
     }
     isdd = (DetectIsdataatData *)sm->ctx;
-    if (isdd->flags != (ISDATAAT_OFFSET_BE) ||
+    if (isdd->flags != (ISDATAAT_OFFSET_VAR) ||
         isdd->dataat != bed1->local_id) {
         printf("isdataat failed\n");
         result = 0;
@@ -4582,7 +4590,7 @@ static int DetectByteExtractTest61(void)
         goto end;
     }
     isdd = (DetectIsdataatData *)sm->ctx;
-    if (isdd->flags != (ISDATAAT_OFFSET_BE |
+    if (isdd->flags != (ISDATAAT_OFFSET_VAR |
                         ISDATAAT_RELATIVE) ||
         isdd->dataat != bed1->local_id) {
         printf("isdataat failed\n");
@@ -4658,7 +4666,7 @@ static int DetectByteExtractTest63(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, -2, one");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, -2, one");
     if (bed == NULL)
         goto end;
 
@@ -4676,7 +4684,7 @@ static int DetectByteExtractTest63(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 
@@ -4684,7 +4692,7 @@ static int DetectByteExtractTestParseNoBase(void)
 {
     int result = 0;
 
-    DetectByteExtractData *bed = DetectByteExtractParse("4, 2, one, string");
+    DetectByteExtractData *bed = DetectByteExtractParse(NULL, "4, 2, one, string");
     if (bed == NULL)
         goto end;
 
@@ -4716,7 +4724,7 @@ static int DetectByteExtractTestParseNoBase(void)
     result = 1;
  end:
     if (bed != NULL)
-        DetectByteExtractFree(bed);
+        DetectByteExtractFree(NULL, bed);
     return result;
 }
 

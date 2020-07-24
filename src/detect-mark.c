@@ -1,4 +1,4 @@
-/* Copyright (C) 2011 Open Information Security Foundation
+/* Copyright (C) 2011-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -39,13 +39,12 @@
 
 #define PARSE_REGEX "([0x]*[0-9a-f]+)/([0x]*[0-9a-f]+)"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectMarkSetup (DetectEngineCtx *, Signature *, const char *);
 static int DetectMarkPacket(DetectEngineThreadCtx *det_ctx, Packet *p,
         const Signature *s, const SigMatchCtx *ctx);
-void DetectMarkDataFree(void *ptr);
+void DetectMarkDataFree(DetectEngineCtx *, void *ptr);
 
 /**
  * \brief Registration function for nfq_set_mark: keyword
@@ -59,7 +58,7 @@ void DetectMarkRegister (void)
     sigmatch_table[DETECT_MARK].Free  = DetectMarkDataFree;
     sigmatch_table[DETECT_MARK].RegisterTests = MarkRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 #ifdef NFQ
@@ -75,7 +74,6 @@ void DetectMarkRegister (void)
 static void * DetectMarkParse (const char *rawstr)
 {
     int ret = 0, res = 0;
-#define MAX_SUBSTRINGS 30
     int ov[MAX_SUBSTRINGS];
     const char *str_ptr = NULL;
     char *ptr = NULL;
@@ -84,7 +82,7 @@ static void * DetectMarkParse (const char *rawstr)
     uint32_t mask;
     DetectMarkData *data;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, rawstr);
         return NULL;
@@ -193,7 +191,7 @@ static int DetectMarkSetup (DetectEngineCtx *de_ctx, Signature *s, const char *r
     }
     SigMatch *sm = SigMatchAlloc();
     if (sm == NULL) {
-        DetectMarkDataFree(data);
+        DetectMarkDataFree(de_ctx, data);
         return -1;
     }
 
@@ -207,7 +205,7 @@ static int DetectMarkSetup (DetectEngineCtx *de_ctx, Signature *s, const char *r
 #endif
 }
 
-void DetectMarkDataFree(void *ptr)
+void DetectMarkDataFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectMarkData *data = (DetectMarkData *)ptr;
     SCFree(data);
@@ -264,7 +262,7 @@ static int MarkTestParse01 (void)
         return 0;
     }
 
-    DetectMarkDataFree(data);
+    DetectMarkDataFree(NULL, data);
     return 1;
 }
 
@@ -284,7 +282,7 @@ static int MarkTestParse02 (void)
         return 1;
     }
 
-    DetectMarkDataFree(data);
+    DetectMarkDataFree(NULL, data);
     return 0;
 }
 
@@ -304,7 +302,7 @@ static int MarkTestParse03 (void)
         return 0;
     }
 
-    DetectMarkDataFree(data);
+    DetectMarkDataFree(NULL, data);
     return 1;
 }
 
@@ -324,7 +322,7 @@ static int MarkTestParse04 (void)
         return 1;
     }
 
-    DetectMarkDataFree(data);
+    DetectMarkDataFree(NULL, data);
     return 0;
 }
 

@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2018 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -55,13 +55,12 @@
 #define MODIFIER_PLUS 2
 #define MODIFIER_ANY  3
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectFlagsMatch (DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectFlagsSetup (DetectEngineCtx *, Signature *, const char *);
-static void DetectFlagsFree(void *);
+static void DetectFlagsFree(DetectEngineCtx *, void *);
 
 static bool PrefilterTcpFlagsIsPrefilterable(const Signature *s);
 static int PrefilterSetupTcpFlags(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
@@ -75,7 +74,7 @@ void DetectFlagsRegister (void)
     sigmatch_table[DETECT_FLAGS].name = "tcp.flags";
     sigmatch_table[DETECT_FLAGS].alias = "flags";
     sigmatch_table[DETECT_FLAGS].desc = "detect which flags are set in the TCP header";
-    sigmatch_table[DETECT_FLAGS].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#tcp-flags";
+    sigmatch_table[DETECT_FLAGS].url = "/rules/header-keywords.html#tcp-flags";
     sigmatch_table[DETECT_FLAGS].Match = DetectFlagsMatch;
     sigmatch_table[DETECT_FLAGS].Setup = DetectFlagsSetup;
     sigmatch_table[DETECT_FLAGS].Free  = DetectFlagsFree;
@@ -84,7 +83,7 @@ void DetectFlagsRegister (void)
     sigmatch_table[DETECT_FLAGS].SupportsPrefilter = PrefilterTcpFlagsIsPrefilterable;
     sigmatch_table[DETECT_FLAGS].SetupPrefilter = PrefilterSetupTcpFlags;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static inline int FlagsMatch(const uint8_t pflags, const uint8_t modifier,
@@ -170,7 +169,6 @@ static DetectFlagsData *DetectFlagsParse (const char *rawstr)
 {
     SCEnter();
 
-#define MAX_SUBSTRINGS 30
     int ret = 0, found = 0, ignore = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     char *ptr;
@@ -179,8 +177,7 @@ static DetectFlagsData *DetectFlagsParse (const char *rawstr)
     char arg2[16] = "";
     char arg3[16] = "";
 
-    ret = pcre_exec(parse_regex, parse_regex_study, rawstr, strlen(rawstr),
-            0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, rawstr, 0, 0, ov, MAX_SUBSTRINGS);
     SCLogDebug("input '%s', pcre said %d", rawstr, ret);
     if (ret < 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre match failed");
@@ -501,7 +498,7 @@ error:
  *
  * \param de pointer to DetectFlagsData
  */
-static void DetectFlagsFree(void *de_ptr)
+static void DetectFlagsFree(DetectEngineCtx *de_ctx, void *de_ptr)
 {
     DetectFlagsData *de = (DetectFlagsData *)de_ptr;
     if(de) SCFree(de);
@@ -622,7 +619,7 @@ static int FlagsTestParse01 (void)
     DetectFlagsData *de = DetectFlagsParse("S");
     FAIL_IF_NULL(de);
     FAIL_IF_NOT(de->flags == TH_SYN);
-    DetectFlagsFree(de);
+    DetectFlagsFree(NULL, de);
     PASS;
 }
 
@@ -637,7 +634,7 @@ static int FlagsTestParse02 (void)
     DetectFlagsData *de = NULL;
     de = DetectFlagsParse("G");
     if (de) {
-        DetectFlagsFree(de);
+        DetectFlagsFree(NULL, de);
         return 0;
     }
 
@@ -1212,7 +1209,7 @@ static int FlagsTestParse13 (void)
     DetectFlagsData *de = NULL;
     de = DetectFlagsParse("+S*");
     if (de != NULL) {
-        DetectFlagsFree(de);
+        DetectFlagsFree(NULL, de);
         return 0;
     }
 
@@ -1229,7 +1226,7 @@ static int FlagsTestParse14(void)
 {
     DetectFlagsData *de = DetectFlagsParse("CE");
     if (de != NULL && (de->flags == (TH_CWR | TH_ECN)) ) {
-        DetectFlagsFree(de);
+        DetectFlagsFree(NULL, de);
         return 1;
     }
 

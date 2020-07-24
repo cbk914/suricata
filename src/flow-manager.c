@@ -145,9 +145,6 @@ typedef struct FlowTimeoutCounters_ {
  */
 void FlowDisableFlowManagerThread(void)
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     /* wake up threads */
     uint32_t u;
     for (u = 0; u < flowmgr_number; u++)
@@ -663,9 +660,9 @@ static TmEcode FlowManagerThreadInit(ThreadVars *t, const void *initdata, void *
     /* set the min and max value used for hash row walking
      * each thread has it's own section of the flow hash */
     uint32_t range = flow_config.hash_size / flowmgr_number;
-    if (ftd->instance == 1)
+    if (ftd->instance == 0)
         ftd->max = range;
-    else if (ftd->instance == flowmgr_number) {
+    else if ((ftd->instance + 1) == flowmgr_number) {
         ftd->min = (range * (ftd->instance - 1));
         ftd->max = flow_config.hash_size;
     } else {
@@ -740,6 +737,12 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 */
     memset(&ts, 0, sizeof(ts));
 
+    /* don't start our activities until time is setup */
+    while (!TimeModeIsReady()) {
+        if (suricata_ctl_flags != 0)
+            return TM_ECODE_OK;
+    }
+
     while (1)
     {
         if (TmThreadsCheckFlag(th_v, THV_PAUSE)) {
@@ -766,7 +769,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         SCLogDebug("ts %" PRIdMAX "", (intmax_t)ts.tv_sec);
 
         /* see if we still have enough spare flows */
-        if (ftd->instance == 1)
+        if (ftd->instance == 0)
             FlowUpdateSpareFlows();
 
         /* try to time out flows */
@@ -774,7 +777,7 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
         FlowTimeoutHash(&ts, 0 /* check all */, ftd->min, ftd->max, &counters);
 
 
-        if (ftd->instance == 1) {
+        if (ftd->instance == 0) {
             DefragTimeoutHash(&ts);
             //uint32_t hosts_pruned =
             HostTimeoutHash(&ts);
@@ -873,9 +876,6 @@ static TmEcode FlowManager(ThreadVars *th_v, void *thread_data)
 /** \brief spawn the flow manager thread */
 void FlowManagerThreadSpawn()
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.managers", &setting);
 
@@ -1027,9 +1027,6 @@ static int FlowRecyclerReadyToShutdown(void)
 /** \brief spawn the flow recycler thread */
 void FlowRecyclerThreadSpawn()
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     intmax_t setting = 1;
     (void)ConfGetInt("flow.recyclers", &setting);
 
@@ -1071,9 +1068,6 @@ void FlowRecyclerThreadSpawn()
  */
 void FlowDisableFlowRecyclerThread(void)
 {
-#ifdef AFLFUZZ_DISABLE_MGTTHREADS
-    return;
-#endif
     int cnt = 0;
 
     /* move all flows still in the hash to the recycler queue */
@@ -1144,7 +1138,7 @@ void TmModuleFlowManagerRegister (void)
     SCLogDebug("%s registered", tmm_modules[TMM_FLOWMANAGER].name);
 
     SC_ATOMIC_INIT(flowmgr_cnt);
-    SC_ATOMIC_INIT(flow_timeouts);
+    SC_ATOMIC_INITPTR(flow_timeouts);
 }
 
 void TmModuleFlowRecyclerRegister (void)

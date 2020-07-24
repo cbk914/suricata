@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -44,14 +44,13 @@
  */
 #define PARSE_REGEX  "^\\s*([!])?\\s*([0-9]{1,9}+)\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectWindowMatch(DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectWindowSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectWindowRegisterTests(void);
-void DetectWindowFree(void *);
+void DetectWindowFree(DetectEngineCtx *, void *);
 
 /**
  * \brief Registration function for window: keyword
@@ -61,13 +60,13 @@ void DetectWindowRegister (void)
     sigmatch_table[DETECT_WINDOW].name = "tcp.window";
     sigmatch_table[DETECT_WINDOW].alias = "window";
     sigmatch_table[DETECT_WINDOW].desc = "check for a specific TCP window size";
-    sigmatch_table[DETECT_WINDOW].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#window";
+    sigmatch_table[DETECT_WINDOW].url = "/rules/header-keywords.html#window";
     sigmatch_table[DETECT_WINDOW].Match = DetectWindowMatch;
     sigmatch_table[DETECT_WINDOW].Setup = DetectWindowSetup;
     sigmatch_table[DETECT_WINDOW].Free  = DetectWindowFree;
     sigmatch_table[DETECT_WINDOW].RegisterTests = DetectWindowRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 /**
@@ -100,19 +99,19 @@ static int DetectWindowMatch(DetectEngineThreadCtx *det_ctx, Packet *p,
 /**
  * \brief This function is used to parse window options passed via window: keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param windowstr Pointer to the user provided window options (negation! and size)
  *
  * \retval wd pointer to DetectWindowData on success
  * \retval NULL on failure
  */
-static DetectWindowData *DetectWindowParse(const char *windowstr)
+static DetectWindowData *DetectWindowParse(DetectEngineCtx *de_ctx, const char *windowstr)
 {
     DetectWindowData *wd = NULL;
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
 
-    ret = pcre_exec(parse_regex, parse_regex_study, windowstr, strlen(windowstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, windowstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1 || ret > 3) {
         SCLogError(SC_ERR_PCRE_MATCH, "pcre_exec parse error, ret %" PRId32 ", string %s", ret, windowstr);
         goto error;
@@ -147,7 +146,7 @@ static DetectWindowData *DetectWindowParse(const char *windowstr)
 
             /* Get the window size if it's a valid value (in packets, we
              * should alert if this doesn't happend from decode) */
-            if (-1 == ByteExtractStringUint16(&wd->size, 10, 0, copy_str)) {
+            if (StringParseUint16(&wd->size, 10, 0, copy_str) < 0) {
                 goto error;
             }
         }
@@ -157,7 +156,7 @@ static DetectWindowData *DetectWindowParse(const char *windowstr)
 
 error:
     if (wd != NULL)
-        DetectWindowFree(wd);
+        DetectWindowFree(de_ctx, wd);
     return NULL;
 
 }
@@ -177,7 +176,7 @@ static int DetectWindowSetup (DetectEngineCtx *de_ctx, Signature *s, const char 
     DetectWindowData *wd = NULL;
     SigMatch *sm = NULL;
 
-    wd = DetectWindowParse(windowstr);
+    wd = DetectWindowParse(de_ctx, windowstr);
     if (wd == NULL) goto error;
 
     /* Okay so far so good, lets get this into a SigMatch
@@ -195,7 +194,7 @@ static int DetectWindowSetup (DetectEngineCtx *de_ctx, Signature *s, const char 
     return 0;
 
 error:
-    if (wd != NULL) DetectWindowFree(wd);
+    if (wd != NULL) DetectWindowFree(de_ctx, wd);
     if (sm != NULL) SCFree(sm);
     return -1;
 
@@ -206,7 +205,7 @@ error:
  *
  * \param wd pointer to DetectWindowData
  */
-void DetectWindowFree(void *ptr)
+void DetectWindowFree(DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectWindowData *wd = (DetectWindowData *)ptr;
     SCFree(wd);
@@ -222,9 +221,9 @@ static int DetectWindowTestParse01 (void)
 {
     int result = 0;
     DetectWindowData *wd = NULL;
-    wd = DetectWindowParse("35402");
+    wd = DetectWindowParse(NULL, "35402");
     if (wd != NULL &&wd->size==35402) {
-        DetectWindowFree(wd);
+        DetectWindowFree(NULL, wd);
         result = 1;
     }
 
@@ -238,14 +237,14 @@ static int DetectWindowTestParse02 (void)
 {
     int result = 0;
     DetectWindowData *wd = NULL;
-    wd = DetectWindowParse("!35402");
+    wd = DetectWindowParse(NULL, "!35402");
     if (wd != NULL) {
         if (wd->negated == 1 && wd->size==35402) {
             result = 1;
         } else {
             printf("expected wd->negated=1 and wd->size=35402\n");
         }
-        DetectWindowFree(wd);
+        DetectWindowFree(NULL, wd);
     }
 
     return result;
@@ -258,13 +257,13 @@ static int DetectWindowTestParse03 (void)
 {
     int result = 0;
     DetectWindowData *wd = NULL;
-    wd = DetectWindowParse("");
+    wd = DetectWindowParse(NULL, "");
     if (wd == NULL) {
         result = 1;
     } else {
         printf("expected a NULL pointer (It was an empty string)\n");
     }
-    DetectWindowFree(wd);
+    DetectWindowFree(NULL, wd);
 
     return result;
 }
@@ -276,10 +275,10 @@ static int DetectWindowTestParse04 (void)
 {
     int result = 0;
     DetectWindowData *wd = NULL;
-    wd = DetectWindowParse("1235402");
+    wd = DetectWindowParse(NULL, "1235402");
     if (wd != NULL) {
         printf("expected a NULL pointer (It was exceeding the MAX window size)\n");
-        DetectWindowFree(wd);
+        DetectWindowFree(NULL, wd);
     }else
         result=1;
 

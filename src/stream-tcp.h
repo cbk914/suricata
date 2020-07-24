@@ -140,6 +140,8 @@ void StreamReassembleRawUpdateProgress(TcpSession *ssn, Packet *p, uint64_t prog
 
 void StreamTcpDetectLogFlush(ThreadVars *tv, StreamTcpThread *stt, Flow *f, Packet *p, PacketQueueNoLock *pq);
 
+const char *StreamTcpStateAsString(const enum TcpState);
+const char *StreamTcpSsnStateAsString(const TcpSession *ssn);
 
 /** ------- Inline functions: ------ */
 
@@ -192,6 +194,9 @@ int StreamTcpInlineDropInvalid(void);
 int StreamTcpInlineMode(void);
 
 int TcpSessionPacketSsnReuse(const Packet *p, const Flow *f, const void *tcp_ssn);
+
+void StreamTcpUpdateAppLayerProgress(TcpSession *ssn, char direction,
+        const uint32_t progress);
 
 #endif /* __STREAM_TCP_H__ */
 

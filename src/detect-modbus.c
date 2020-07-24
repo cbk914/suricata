@@ -51,6 +51,7 @@
 #include "detect-engine-modbus.h"
 
 #include "util-debug.h"
+#include "util-byte.h"
 
 #include "app-layer-modbus.h"
 
@@ -60,26 +61,22 @@
  * \brief Regex for parsing the Modbus unit id string
  */
 #define PARSE_REGEX_UNIT_ID "^\\s*\"?\\s*unit\\s+([<>]?\\d+)(<>\\d+)?(,\\s*(.*))?\\s*\"?\\s*$"
-static pcre         *unit_id_parse_regex;
-static pcre_extra   *unit_id_parse_regex_study;
+static DetectParseRegex unit_id_parse_regex;
 
 /**
  * \brief Regex for parsing the Modbus function string
  */
 #define PARSE_REGEX_FUNCTION "^\\s*\"?\\s*function\\s*(!?[A-z0-9]+)(,\\s*subfunction\\s+(\\d+))?\\s*\"?\\s*$"
-static pcre         *function_parse_regex;
-static pcre_extra   *function_parse_regex_study;
+static DetectParseRegex function_parse_regex;
 
 /**
  * \brief Regex for parsing the Modbus access string
  */
 #define PARSE_REGEX_ACCESS "^\\s*\"?\\s*access\\s*(read|write)\\s*(discretes|coils|input|holding)?(,\\s*address\\s+([<>]?\\d+)(<>\\d+)?(,\\s*value\\s+([<>]?\\d+)(<>\\d+)?)?)?\\s*\"?\\s*$"
-static pcre         *access_parse_regex;
-static pcre_extra   *access_parse_regex_study;
+static DetectParseRegex access_parse_regex;
 
 static int g_modbus_buffer_id = 0;
 
-#define MAX_SUBSTRINGS 30
 
 void DetectModbusRegisterTests(void);
 
@@ -89,14 +86,11 @@ void DetectModbusRegisterTests(void);
  *
  * \param ptr pointer to DetectModbus
  */
-static void DetectModbusFree(void *ptr) {
+static void DetectModbusFree(DetectEngineCtx *de_ctx, void *ptr) {
     SCEnter();
     DetectModbus *modbus = (DetectModbus *) ptr;
 
     if(modbus) {
-        if (modbus->subfunction)
-            SCFree(modbus->subfunction);
-
         if (modbus->unit_id)
             SCFree(modbus->unit_id);
 
@@ -114,11 +108,12 @@ static void DetectModbusFree(void *ptr) {
  *
  * \brief This function is used to parse Modbus parameters in access mode
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param str Pointer to the user provided id option
  *
  * \retval Pointer to DetectModbusData on success or NULL on failure
  */
-static DetectModbus *DetectModbusAccessParse(const char *str)
+static DetectModbus *DetectModbusAccessParse(DetectEngineCtx *de_ctx, const char *str)
 {
     SCEnter();
     DetectModbus *modbus = NULL;
@@ -126,8 +121,7 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
     char    arg[MAX_SUBSTRINGS];
     int     ov[MAX_SUBSTRINGS], ret, res;
 
-    ret = pcre_exec(access_parse_regex, access_parse_regex_study, str, strlen(str), 0, 0, ov, MAX_SUBSTRINGS);
-
+    ret = DetectParsePcreExec(&access_parse_regex, str, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1)
         goto error;
 
@@ -194,14 +188,21 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
             if (unlikely(modbus->address == NULL))
                 goto error;
 
+            uint8_t idx;
             if (arg[0] == '>') {
-                modbus->address->min    = atoi((const char*) (arg+1));
+                idx = 1;
                 modbus->address->mode   = DETECT_MODBUS_GT;
             } else if (arg[0] == '<') {
-                modbus->address->min    = atoi((const char*) (arg+1));
+                idx = 1;
                 modbus->address->mode   = DETECT_MODBUS_LT;
             } else {
-                modbus->address->min    = atoi((const char*) arg);
+                idx = 0;
+            }
+            if (StringParseUint16(&modbus->address->min, 10, 0,
+                                  (const char *) (arg + idx)) < 0) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for min "
+                           "address: %s", (const char *)(arg + idx));
+                goto error;
             }
             SCLogDebug("and min/equal address %d", modbus->address->min);
 
@@ -213,7 +214,12 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
                 }
 
                 if (*arg != '\0') {
-                    modbus->address->max    = atoi((const char*) (arg+2));
+                    if (StringParseUint16(&modbus->address->max, 10, 0,
+                                         (const char*) (arg + 2)) < 0) {
+                        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for max "
+                                   "address: %s", (const char*)(arg + 2));
+                        goto error;
+                    }
                     modbus->address->mode   = DETECT_MODBUS_RA;
                     SCLogDebug("and max address %d", modbus->address->max);
                 }
@@ -239,14 +245,22 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
                     if (unlikely(modbus->data == NULL))
                         goto error;
 
+
+                    uint8_t idx_mode;
                     if (arg[0] == '>') {
-                        modbus->data->min   = atoi((const char*) (arg+1));
+                        idx_mode = 1;
                         modbus->data->mode  = DETECT_MODBUS_GT;
                     } else if (arg[0] == '<') {
-                        modbus->data->min   = atoi((const char*) (arg+1));
+                        idx_mode = 1;
                         modbus->data->mode  = DETECT_MODBUS_LT;
                     } else {
-                        modbus->data->min   = atoi((const char*) arg);
+                        idx_mode = 0;
+                    }
+                    if (StringParseUint16(&modbus->data->min, 10, 0,
+                                          (const char*) (arg + idx_mode)) < 0) {
+                        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for "
+                                   "min data: %s", (const char*)(arg + idx_mode));
+                        goto error;
                     }
                     SCLogDebug("and min/equal value %d", modbus->data->min);
 
@@ -258,7 +272,13 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
                         }
 
                         if (*arg != '\0') {
-                            modbus->data->max   = atoi((const char*) (arg+2));
+                            if (StringParseUint16(&modbus->data->max,
+                                                  10, 0, (const char*) (arg + 2)) < 0) {
+                                SCLogError(SC_ERR_INVALID_VALUE,
+                                           "Invalid value for max data: %s",
+                                           (const char*)(arg + 2));
+                                goto error;
+                            }
                             modbus->data->mode  = DETECT_MODBUS_RA;
                             SCLogDebug("and max value %d", modbus->data->max);
                         }
@@ -272,7 +292,7 @@ static DetectModbus *DetectModbusAccessParse(const char *str)
 
 error:
     if (modbus != NULL)
-        DetectModbusFree(modbus);
+        DetectModbusFree(de_ctx, modbus);
 
     SCReturnPtr(NULL, "DetectModbus");
 }
@@ -286,7 +306,7 @@ error:
  * \retval id_d pointer to DetectModbusData on success
  * \retval NULL on failure
  */
-static DetectModbus *DetectModbusFunctionParse(const char *str)
+static DetectModbus *DetectModbusFunctionParse(DetectEngineCtx *de_ctx, const char *str)
 {
     SCEnter();
     DetectModbus *modbus = NULL;
@@ -294,8 +314,7 @@ static DetectModbus *DetectModbusFunctionParse(const char *str)
     char    arg[MAX_SUBSTRINGS], *ptr = arg;
     int     ov[MAX_SUBSTRINGS], res, ret;
 
-    ret = pcre_exec(function_parse_regex, function_parse_regex_study, str, strlen(str), 0, 0, ov, MAX_SUBSTRINGS);
-
+    ret = DetectParsePcreExec(&function_parse_regex, str, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1)
         goto error;
 
@@ -311,7 +330,11 @@ static DetectModbus *DetectModbusFunctionParse(const char *str)
         goto error;
 
     if (isdigit((unsigned char)ptr[0])) {
-        modbus->function = atoi((const char*) ptr);
+        if (StringParseUint8(&modbus->function, 10, 0, (const char *)ptr) < 0) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for "
+                       "modbus function: %s", (const char *)ptr);
+            goto error;
+        }
         /* Function code 0 is managed by decoder_event INVALID_FUNCTION_CODE */
         if (modbus->function == MODBUS_FUNC_NONE) {
             SCLogError(SC_ERR_INVALID_SIGNATURE,
@@ -329,13 +352,14 @@ static DetectModbus *DetectModbusFunctionParse(const char *str)
                 goto error;
             }
 
-            /* We have a correct address option */
-            modbus->subfunction =(uint16_t *) SCCalloc(1, sizeof(uint16_t));
-            if (modbus->subfunction == NULL)
+            if (StringParseUint16(&modbus->subfunction, 10, 0, (const char *)arg) < 0) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for "
+                           "modbus subfunction: %s", (const char*)arg);
                 goto error;
+            }
+            modbus->has_subfunction = true;
 
-            *(modbus->subfunction) = atoi((const char*) arg);
-            SCLogDebug("and subfunction %d", *(modbus->subfunction));
+            SCLogDebug("and subfunction %d", modbus->subfunction);
         }
     } else {
         uint8_t neg = 0;
@@ -367,7 +391,7 @@ static DetectModbus *DetectModbusFunctionParse(const char *str)
 
 error:
     if (modbus != NULL)
-        DetectModbusFree(modbus);
+        DetectModbusFree(de_ctx, modbus);
 
     SCReturnPtr(NULL, "DetectModbus");
 }
@@ -380,7 +404,7 @@ error:
  *
  * \retval Pointer to DetectModbusUnit on success or NULL on failure
  */
-static DetectModbus *DetectModbusUnitIdParse(const char *str)
+static DetectModbus *DetectModbusUnitIdParse(DetectEngineCtx *de_ctx, const char *str)
 {
     SCEnter();
     DetectModbus *modbus = NULL;
@@ -388,8 +412,7 @@ static DetectModbus *DetectModbusUnitIdParse(const char *str)
     char    arg[MAX_SUBSTRINGS];
     int     ov[MAX_SUBSTRINGS], ret, res;
 
-    ret = pcre_exec(unit_id_parse_regex, unit_id_parse_regex_study, str, strlen(str), 0, 0, ov, MAX_SUBSTRINGS);
-
+    ret = DetectParsePcreExec(&unit_id_parse_regex, str, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1)
         goto error;
 
@@ -409,8 +432,8 @@ static DetectModbus *DetectModbusUnitIdParse(const char *str)
             goto error;
         }
 
-        if ((modbus = DetectModbusFunctionParse(str_ptr)) == NULL) {
-            if ((modbus = DetectModbusAccessParse(str_ptr)) == NULL) {
+        if ((modbus = DetectModbusFunctionParse(de_ctx, str_ptr)) == NULL) {
+            if ((modbus = DetectModbusAccessParse(de_ctx, str_ptr)) == NULL) {
                 SCLogError(SC_ERR_PCRE_MATCH, "invalid modbus option");
                 goto error;
             }
@@ -427,14 +450,20 @@ static DetectModbus *DetectModbusUnitIdParse(const char *str)
     if (unlikely(modbus->unit_id == NULL))
         goto error;
 
+    uint8_t idx;
     if (arg[0] == '>') {
-        modbus->unit_id->min   = atoi((const char*) (arg+1));
+        idx = 1;
         modbus->unit_id->mode  = DETECT_MODBUS_GT;
     } else if (arg[0] == '<') {
-        modbus->unit_id->min   = atoi((const char*) (arg+1));
+        idx = 1;
         modbus->unit_id->mode  = DETECT_MODBUS_LT;
     } else {
-        modbus->unit_id->min   = atoi((const char*) arg);
+        idx = 0;
+    }
+    if (StringParseUint16(&modbus->unit_id->min, 10, 0, (const char *) (arg + idx)) < 0) {
+        SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for "
+                   "modbus min unit id: %s", (const char*)(arg + idx));
+        goto error;
     }
     SCLogDebug("and min/equal unit id %d", modbus->unit_id->min);
 
@@ -446,7 +475,11 @@ static DetectModbus *DetectModbusUnitIdParse(const char *str)
         }
 
         if (*arg != '\0') {
-            modbus->unit_id->max   = atoi((const char*) (arg+2));
+            if (StringParseUint16(&modbus->unit_id->max, 10, 0, (const char *) (arg + 2)) < 0) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Invalid value for "
+                           "modbus max unit id: %s", (const char*)(arg + 2));
+                goto error;
+            }
             modbus->unit_id->mode  = DETECT_MODBUS_RA;
             SCLogDebug("and max unit id %d", modbus->unit_id->max);
         }
@@ -456,7 +489,7 @@ static DetectModbus *DetectModbusUnitIdParse(const char *str)
 
 error:
     if (modbus != NULL)
-        DetectModbusFree(modbus);
+        DetectModbusFree(de_ctx, modbus);
 
     SCReturnPtr(NULL, "DetectModbus");
 }
@@ -481,9 +514,9 @@ static int DetectModbusSetup(DetectEngineCtx *de_ctx, Signature *s, const char *
     if (DetectSignatureSetAppProto(s, ALPROTO_MODBUS) != 0)
         return -1;
 
-    if ((modbus = DetectModbusUnitIdParse(str)) == NULL) {
-        if ((modbus = DetectModbusFunctionParse(str)) == NULL) {
-            if ((modbus = DetectModbusAccessParse(str)) == NULL) {
+    if ((modbus = DetectModbusUnitIdParse(de_ctx, str)) == NULL) {
+        if ((modbus = DetectModbusFunctionParse(de_ctx, str)) == NULL) {
+            if ((modbus = DetectModbusAccessParse(de_ctx, str)) == NULL) {
                 SCLogError(SC_ERR_PCRE_MATCH, "invalid modbus option");
                 goto error;
             }
@@ -504,7 +537,7 @@ static int DetectModbusSetup(DetectEngineCtx *de_ctx, Signature *s, const char *
 
 error:
     if (modbus != NULL)
-        DetectModbusFree(modbus);
+        DetectModbusFree(de_ctx, modbus);
     if (sm != NULL)
         SCFree(sm);
     SCReturnInt(-1);
@@ -518,18 +551,15 @@ void DetectModbusRegister(void)
     SCEnter();
     sigmatch_table[DETECT_AL_MODBUS].name          = "modbus";
     sigmatch_table[DETECT_AL_MODBUS].desc          = "match on various properties of Modbus requests";
-    sigmatch_table[DETECT_AL_MODBUS].url           = DOC_URL DOC_VERSION "/rules/modbus-keyword.html#modbus-keyword";
+    sigmatch_table[DETECT_AL_MODBUS].url           = "/rules/modbus-keyword.html#modbus-keyword";
     sigmatch_table[DETECT_AL_MODBUS].Match         = NULL;
     sigmatch_table[DETECT_AL_MODBUS].Setup         = DetectModbusSetup;
     sigmatch_table[DETECT_AL_MODBUS].Free          = DetectModbusFree;
     sigmatch_table[DETECT_AL_MODBUS].RegisterTests = DetectModbusRegisterTests;
 
-    DetectSetupParseRegexes(PARSE_REGEX_UNIT_ID,
-            &unit_id_parse_regex, &unit_id_parse_regex_study);
-    DetectSetupParseRegexes(PARSE_REGEX_FUNCTION,
-            &function_parse_regex, &function_parse_regex_study);
-    DetectSetupParseRegexes(PARSE_REGEX_ACCESS,
-            &access_parse_regex, &access_parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX_UNIT_ID, &unit_id_parse_regex);
+    DetectSetupParseRegexes(PARSE_REGEX_FUNCTION, &function_parse_regex);
+    DetectSetupParseRegexes(PARSE_REGEX_ACCESS, &access_parse_regex);
 
     DetectAppLayerInspectEngineRegister("modbus",
             ALPROTO_MODBUS, SIG_FLAG_TOSERVER, 0,
@@ -590,7 +620,7 @@ static int DetectModbusTest02(void)
     modbus = (DetectModbus *) de_ctx->sig_list->sm_lists_tail[g_modbus_buffer_id]->ctx;
 
     FAIL_IF_NOT(modbus->function == 8);
-    FAIL_IF_NOT(*modbus->subfunction == 4);
+    FAIL_IF_NOT(modbus->subfunction == 4);
 
     SigGroupCleanup(de_ctx);
     SigCleanSignatures(de_ctx);
@@ -871,7 +901,7 @@ static int DetectModbusTest11(void)
     FAIL_IF_NOT((*modbus->unit_id).min == 10);
     FAIL_IF_NOT((*modbus->unit_id).mode == mode);
     FAIL_IF_NOT(modbus->function == 8);
-    FAIL_IF_NOT((*modbus->subfunction) == 4);
+    FAIL_IF_NOT(modbus->subfunction == 4);
 
     SigGroupCleanup(de_ctx);
     SigCleanSignatures(de_ctx);

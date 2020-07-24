@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2020 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -40,14 +40,13 @@
 
 #define PARSE_REGEX "^\\s*(\"\\s*)?([0-9]+)(\\s*\")?\\s*$"
 
-static pcre *parse_regex;
-static pcre_extra *parse_regex_study;
+static DetectParseRegex parse_regex;
 
 static int DetectIcmpSeqMatch(DetectEngineThreadCtx *, Packet *,
         const Signature *, const SigMatchCtx *);
 static int DetectIcmpSeqSetup(DetectEngineCtx *, Signature *, const char *);
 void DetectIcmpSeqRegisterTests(void);
-void DetectIcmpSeqFree(void *);
+void DetectIcmpSeqFree(DetectEngineCtx *, void *);
 static int PrefilterSetupIcmpSeq(DetectEngineCtx *de_ctx, SigGroupHead *sgh);
 static bool PrefilterIcmpSeqIsPrefilterable(const Signature *s);
 
@@ -58,7 +57,7 @@ void DetectIcmpSeqRegister (void)
 {
     sigmatch_table[DETECT_ICMP_SEQ].name = "icmp_seq";
     sigmatch_table[DETECT_ICMP_SEQ].desc = "check for a ICMP sequence number";
-    sigmatch_table[DETECT_ICMP_SEQ].url = DOC_URL DOC_VERSION "/rules/header-keywords.html#icmp-seq";
+    sigmatch_table[DETECT_ICMP_SEQ].url = "/rules/header-keywords.html#icmp-seq";
     sigmatch_table[DETECT_ICMP_SEQ].Match = DetectIcmpSeqMatch;
     sigmatch_table[DETECT_ICMP_SEQ].Setup = DetectIcmpSeqSetup;
     sigmatch_table[DETECT_ICMP_SEQ].Free = DetectIcmpSeqFree;
@@ -67,7 +66,7 @@ void DetectIcmpSeqRegister (void)
     sigmatch_table[DETECT_ICMP_SEQ].SupportsPrefilter = PrefilterIcmpSeqIsPrefilterable;
     sigmatch_table[DETECT_ICMP_SEQ].SetupPrefilter = PrefilterSetupIcmpSeq;
 
-    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex, &parse_regex_study);
+    DetectSetupParseRegexes(PARSE_REGEX, &parse_regex);
 }
 
 static inline bool GetIcmpSeq(Packet *p, uint16_t *seq)
@@ -150,22 +149,22 @@ static int DetectIcmpSeqMatch (DetectEngineThreadCtx *det_ctx, Packet *p,
 /**
  * \brief This function is used to parse icmp_seq option passed via icmp_seq: keyword
  *
+ * \param de_ctx Pointer to the detection engine context
  * \param icmpseqstr Pointer to the user provided icmp_seq options
  *
  * \retval iseq pointer to DetectIcmpSeqData on success
  * \retval NULL on failure
  */
-static DetectIcmpSeqData *DetectIcmpSeqParse (const char *icmpseqstr)
+static DetectIcmpSeqData *DetectIcmpSeqParse (DetectEngineCtx *de_ctx, const char *icmpseqstr)
 {
     DetectIcmpSeqData *iseq = NULL;
     char *substr[3] = {NULL, NULL, NULL};
-#define MAX_SUBSTRINGS 30
     int ret = 0, res = 0;
     int ov[MAX_SUBSTRINGS];
     int i;
     const char *str_ptr;
 
-    ret = pcre_exec(parse_regex, parse_regex_study, icmpseqstr, strlen(icmpseqstr), 0, 0, ov, MAX_SUBSTRINGS);
+    ret = DetectParsePcreExec(&parse_regex, icmpseqstr, 0, 0, ov, MAX_SUBSTRINGS);
     if (ret < 1 || ret > 4) {
         SCLogError(SC_ERR_PCRE_MATCH,"Parse error %s", icmpseqstr);
         goto error;
@@ -199,7 +198,7 @@ static DetectIcmpSeqData *DetectIcmpSeqParse (const char *icmpseqstr)
     }
 
     uint16_t seq = 0;
-    if (ByteExtractStringUint16(&seq, 10, 0, substr[1]) < 0) {
+    if (StringParseUint16(&seq, 10, 0, substr[1]) < 0) {
         SCLogError(SC_ERR_INVALID_ARGUMENT, "specified icmp seq %s is not "
                                         "valid", substr[1]);
         goto error;
@@ -216,7 +215,7 @@ error:
     for (i = 0; i < 3; i++) {
         if (substr[i] != NULL) SCFree(substr[i]);
     }
-    if (iseq != NULL) DetectIcmpSeqFree(iseq);
+    if (iseq != NULL) DetectIcmpSeqFree(de_ctx, iseq);
     return NULL;
 
 }
@@ -236,7 +235,7 @@ static int DetectIcmpSeqSetup (DetectEngineCtx *de_ctx, Signature *s, const char
     DetectIcmpSeqData *iseq = NULL;
     SigMatch *sm = NULL;
 
-    iseq = DetectIcmpSeqParse(icmpseqstr);
+    iseq = DetectIcmpSeqParse(de_ctx, icmpseqstr);
     if (iseq == NULL) goto error;
 
     sm = SigMatchAlloc();
@@ -250,7 +249,7 @@ static int DetectIcmpSeqSetup (DetectEngineCtx *de_ctx, Signature *s, const char
     return 0;
 
 error:
-    if (iseq != NULL) DetectIcmpSeqFree(iseq);
+    if (iseq != NULL) DetectIcmpSeqFree(de_ctx, iseq);
     if (sm != NULL) SCFree(sm);
     return -1;
 
@@ -261,7 +260,7 @@ error:
  *
  * \param ptr pointer to DetectIcmpSeqData
  */
-void DetectIcmpSeqFree (void *ptr)
+void DetectIcmpSeqFree (DetectEngineCtx *de_ctx, void *ptr)
 {
     DetectIcmpSeqData *iseq = (DetectIcmpSeqData *)ptr;
     SCFree(iseq);
@@ -332,9 +331,9 @@ static bool PrefilterIcmpSeqIsPrefilterable(const Signature *s)
 static int DetectIcmpSeqParseTest01 (void)
 {
     DetectIcmpSeqData *iseq = NULL;
-    iseq = DetectIcmpSeqParse("300");
+    iseq = DetectIcmpSeqParse(NULL, "300");
     if (iseq != NULL && htons(iseq->seq) == 300) {
-        DetectIcmpSeqFree(iseq);
+        DetectIcmpSeqFree(NULL, iseq);
         return 1;
     }
     return 0;
@@ -347,9 +346,9 @@ static int DetectIcmpSeqParseTest01 (void)
 static int DetectIcmpSeqParseTest02 (void)
 {
     DetectIcmpSeqData *iseq = NULL;
-    iseq = DetectIcmpSeqParse("  300  ");
+    iseq = DetectIcmpSeqParse(NULL, "  300  ");
     if (iseq != NULL && htons(iseq->seq) == 300) {
-        DetectIcmpSeqFree(iseq);
+        DetectIcmpSeqFree(NULL, iseq);
         return 1;
     }
     return 0;
@@ -361,9 +360,9 @@ static int DetectIcmpSeqParseTest02 (void)
 static int DetectIcmpSeqParseTest03 (void)
 {
     DetectIcmpSeqData *iseq = NULL;
-    iseq = DetectIcmpSeqParse("badc");
+    iseq = DetectIcmpSeqParse(NULL, "badc");
     if (iseq != NULL) {
-        DetectIcmpSeqFree(iseq);
+        DetectIcmpSeqFree(NULL, iseq);
         return 0;
     }
     return 1;

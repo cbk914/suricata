@@ -195,7 +195,9 @@ static int DetectLoadSigFile(DetectEngineCtx *de_ctx, char *sig_file,
             if (rule_engine_analysis_set) {
                 EngineAnalysisRulesFailure(line, sig_file, lineno - multiline);
             }
-            bad++;
+            if (!de_ctx->sigerror_ok) {
+                bad++;
+            }
         }
         multiline = 0;
     }
@@ -548,7 +550,7 @@ static TmEcode DetectLoaderThreadInit(ThreadVars *t, const void *initdata, void 
     if (ftd == NULL)
         return TM_ECODE_FAILED;
 
-    ftd->instance = SC_ATOMIC_ADD(detect_loader_cnt, 1) - 1; /* id's start at 0 */
+    ftd->instance = SC_ATOMIC_ADD(detect_loader_cnt, 1); /* id's start at 0 */
     SCLogDebug("detect loader instance %u", ftd->instance);
 
     /* pass thread data back to caller */
