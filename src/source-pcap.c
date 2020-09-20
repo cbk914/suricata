@@ -116,7 +116,9 @@ static TmEcode DecodePcapThreadInit(ThreadVars *, const void *, void **);
 static TmEcode DecodePcapThreadDeinit(ThreadVars *tv, void *data);
 static TmEcode DecodePcap(ThreadVars *, Packet *, void *);
 
-void SourcePcapRegisterTests(void);
+#ifdef UNITTESTS
+static void SourcePcapRegisterTests(void);
+#endif
 
 /** protect pcap_compile and pcap_setfilter, as they are not thread safe:
  *  http://seclists.org/tcpdump/2009/q1/62 */
@@ -134,7 +136,9 @@ void TmModuleReceivePcapRegister (void)
     tmm_modules[TMM_RECEIVEPCAP].ThreadExitPrintStats = ReceivePcapThreadExitStats;
     tmm_modules[TMM_RECEIVEPCAP].cap_flags = SC_CAP_NET_RAW;
     tmm_modules[TMM_RECEIVEPCAP].flags = TM_FLAG_RECEIVE_TM;
+#ifdef UNITTESTS
     tmm_modules[TMM_RECEIVEPCAP].RegisterTests = SourcePcapRegisterTests;
+#endif
 }
 
 /**
@@ -649,14 +653,13 @@ void PcapTranslateIPToDevice(char *pcap_dev, size_t len)
 
     struct addrinfo ai_hints;
     struct addrinfo *ai_list = NULL;
-    int ret = 0;
 
     memset(&ai_hints, 0, sizeof(ai_hints));
     ai_hints.ai_family = AF_UNSPEC;
     ai_hints.ai_flags = AI_NUMERICHOST;
 
     /* try to translate IP */
-    if ((ret = getaddrinfo(pcap_dev, NULL, &ai_hints, &ai_list)) != 0) {
+    if (getaddrinfo(pcap_dev, NULL, &ai_hints, &ai_list) != 0) {
         return;
     }
 
@@ -711,14 +714,11 @@ void PcapTranslateIPToDevice(char *pcap_dev, size_t len)
 
 #ifdef UNITTESTS
 #include "tests/source-pcap.c"
-#endif /* UNITTESTS */
-
 /**
  *  \brief  Register the Unit tests for pcap source
  */
-void SourcePcapRegisterTests(void)
+static void SourcePcapRegisterTests(void)
 {
-#ifdef UNITTESTS
     SourcePcapRegisterStatsTests();
-#endif /* UNITTESTS */
 }
+#endif /* UNITTESTS */

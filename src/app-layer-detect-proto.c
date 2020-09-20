@@ -869,6 +869,8 @@ static void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingPar
                         printf("            alproto: ALPROTO_TEMPLATE_RUST\n");
                     else if (pp_pe->alproto == ALPROTO_RFB)
                         printf("            alproto: ALPROTO_RFB\n");
+                    else if (pp_pe->alproto == ALPROTO_MQTT)
+                        printf("            alproto: ALPROTO_MQTT\n");
                     else if (pp_pe->alproto == ALPROTO_TEMPLATE)
                         printf("            alproto: ALPROTO_TEMPLATE\n");
                     else if (pp_pe->alproto == ALPROTO_DNP3)
@@ -944,6 +946,8 @@ static void AppLayerProtoDetectPrintProbingParsers(AppLayerProtoDetectProbingPar
                     printf("            alproto: ALPROTO_TEMPLATE_RUST\n");
                 else if (pp_pe->alproto == ALPROTO_RFB)
                     printf("            alproto: ALPROTO_RFB\n");
+                else if (pp_pe->alproto == ALPROTO_MQTT)
+                    printf("            alproto: ALPROTO_MQTT\n");
                 else if (pp_pe->alproto == ALPROTO_TEMPLATE)
                     printf("            alproto: ALPROTO_TEMPLATE\n");
                 else if (pp_pe->alproto == ALPROTO_DNP3)
@@ -1864,7 +1868,6 @@ void AppLayerRequestProtocolTLSUpgrade(Flow *f)
 
 void AppLayerProtoDetectReset(Flow *f)
 {
-    FlowUnsetChangeProtoFlag(f);
     FLOW_RESET_PM_DONE(f, STREAM_TOSERVER);
     FLOW_RESET_PM_DONE(f, STREAM_TOCLIENT);
     FLOW_RESET_PP_DONE(f, STREAM_TOSERVER);
@@ -1874,8 +1877,8 @@ void AppLayerProtoDetectReset(Flow *f)
     f->probing_parser_toserver_alproto_masks = 0;
     f->probing_parser_toclient_alproto_masks = 0;
 
-    AppLayerParserStateCleanup(f, f->alstate, f->alparser);
-    f->alstate = NULL;
+    // Does not free the structures for the parser
+    // keeps f->alstate for new state creation
     f->alparser = NULL;
     f->alproto    = ALPROTO_UNKNOWN;
     f->alproto_ts = ALPROTO_UNKNOWN;

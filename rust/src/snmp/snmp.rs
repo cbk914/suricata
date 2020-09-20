@@ -25,8 +25,6 @@ use std;
 use std::ffi::{CStr,CString};
 use std::mem::transmute;
 
-use crate::log::*;
-
 use der_parser::ber::BerObjectContent;
 use der_parser::der::parse_der_sequence;
 use der_parser::oid::Oid;
@@ -299,7 +297,7 @@ impl<'a> Drop for SNMPTransaction<'a> {
 
 /// Returns *mut SNMPState
 #[no_mangle]
-pub extern "C" fn rs_snmp_state_new() -> *mut std::os::raw::c_void {
+pub extern "C" fn rs_snmp_state_new(_orig_state: *mut std::os::raw::c_void, _orig_proto: AppProto) -> *mut std::os::raw::c_void {
     let state = SNMPState::new();
     let boxed = Box::new(state);
     return unsafe{std::mem::transmute(boxed)};

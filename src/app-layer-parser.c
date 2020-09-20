@@ -66,9 +66,11 @@
 #include "app-layer-snmp.h"
 #include "app-layer-sip.h"
 #include "app-layer-rfb.h"
+#include "app-layer-mqtt.h"
 #include "app-layer-template.h"
 #include "app-layer-template-rust.h"
 #include "app-layer-rdp.h"
+#include "app-layer-http2.h"
 
 #include "conf.h"
 #include "util-spm.h"
@@ -97,7 +99,7 @@ typedef struct AppLayerParserProtoCtx_
     bool logger;
     uint32_t logger_bits;   /**< registered loggers for this proto */
 
-    void *(*StateAlloc)(void);
+    void *(*StateAlloc)(void *, AppProto);
     void (*StateFree)(void *);
     void (*StateTransactionFree)(void *, uint64_t);
     void *(*LocalStorageAlloc)(void);
@@ -394,8 +396,7 @@ uint32_t AppLayerParserGetOptionFlags(uint8_t protomap, AppProto alproto)
 }
 
 void AppLayerParserRegisterStateFuncs(uint8_t ipproto, AppProto alproto,
-                           void *(*StateAlloc)(void),
-                           void (*StateFree)(void *))
+        void *(*StateAlloc)(void *, AppProto), void (*StateFree)(void *))
 {
     SCEnter();
 
@@ -1160,6 +1161,17 @@ void AppLayerParserApplyTxConfig(uint8_t ipproto, AppProto alproto,
 
 /***** General *****/
 
+static inline void SetEOFFlags(AppLayerParserState *pstate, const uint8_t flags)
+{
+    if ((flags & (STREAM_EOF|STREAM_TOSERVER)) == (STREAM_EOF|STREAM_TOSERVER)) {
+        SCLogDebug("setting APP_LAYER_PARSER_EOF_TS");
+        AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_EOF_TS);
+    } else if ((flags & (STREAM_EOF|STREAM_TOCLIENT)) == (STREAM_EOF|STREAM_TOCLIENT)) {
+        SCLogDebug("setting APP_LAYER_PARSER_EOF_TC");
+        AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_EOF_TC);
+    }
+}
+
 /** \retval int -1 in case of unrecoverable error. App-layer tracking stops for this flow.
  *  \retval int 0 ok: we did not update app_progress
  *  \retval int 1 ok: we updated app_progress */
@@ -1199,12 +1211,11 @@ int AppLayerParserParse(ThreadVars *tv, AppLayerParserThreadCtx *alp_tctx, Flow 
             goto error;
     }
 
-    if (flags & STREAM_EOF)
-        AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_EOF);
+    SetEOFFlags(pstate, flags);
 
     alstate = f->alstate;
-    if (alstate == NULL) {
-        f->alstate = alstate = p->StateAlloc();
+    if (alstate == NULL || FlowChangeProto(f)) {
+        f->alstate = alstate = p->StateAlloc(alstate, f->alproto_orig);
         if (alstate == NULL)
             goto error;
         SCLogDebug("alloced new app layer state %p (name %s)",
@@ -1223,15 +1234,25 @@ int AppLayerParserParse(ThreadVars *tv, AppLayerParserThreadCtx *alp_tctx, Flow 
                 input, input_len,
                 alp_tctx->alproto_local_storage[f->protomap][alproto],
                 flags);
-        if (res.status < 0)
-        {
+        if (res.status < 0) {
             goto error;
         } else if (res.status > 0) {
+            DEBUG_VALIDATE_BUG_ON(res.consumed > input_len);
+            DEBUG_VALIDATE_BUG_ON(res.needed + res.consumed < input_len);
+            DEBUG_VALIDATE_BUG_ON(res.needed == 0);
+            /* incomplete is only supported for TCP */
+            DEBUG_VALIDATE_BUG_ON(f->proto != IPPROTO_TCP);
+
+            /* put protocol in error state on improper use of the
+             * return codes. */
+            if (res.consumed > input_len || res.needed + res.consumed < input_len) {
+                goto error;
+            }
+
             if (f->proto == IPPROTO_TCP && f->protoctx != NULL) {
                 TcpSession *ssn = f->protoctx;
                 SCLogDebug("direction %d/%s", direction,
                         (flags & STREAM_TOSERVER) ? "toserver" : "toclient");
-                BUG_ON(res.consumed > input_len);
                 if (direction == 0) {
                     /* parser told us how much data it needs on top of what it
                      * consumed. So we need tell stream engine how much we need
@@ -1245,12 +1266,7 @@ int AppLayerParserParse(ThreadVars *tv, AppLayerParserThreadCtx *alp_tctx, Flow 
                     ssn->server.data_required = res.needed;
                     SCLogDebug("setting data_required %u", ssn->server.data_required);
                 }
-            } else {
-                /* incomplete is only supported for TCP */
-                BUG_ON(f->proto != IPPROTO_TCP);
             }
-            BUG_ON(res.needed + res.consumed < input_len);
-            BUG_ON(res.needed == 0);
             consumed = res.consumed;
         }
     }
@@ -1333,7 +1349,8 @@ void AppLayerParserSetEOF(AppLayerParserState *pstate)
     if (pstate == NULL)
         goto end;
 
-    AppLayerParserStateSetFlag(pstate, APP_LAYER_PARSER_EOF);
+    SCLogDebug("setting APP_LAYER_PARSER_EOF_TC and APP_LAYER_PARSER_EOF_TS");
+    AppLayerParserStateSetFlag(pstate, (APP_LAYER_PARSER_EOF_TS|APP_LAYER_PARSER_EOF_TC));
 
  end:
     SCReturn;
@@ -1432,12 +1449,12 @@ void AppLayerParserSetStreamDepthFlag(uint8_t ipproto, AppProto alproto, void *s
 
 /***** Cleanup *****/
 
-void AppLayerParserStateCleanup(const Flow *f, void *alstate,
-                                AppLayerParserState *pstate)
+void AppLayerParserStateProtoCleanup(
+        uint8_t protomap, AppProto alproto, void *alstate, AppLayerParserState *pstate)
 {
     SCEnter();
 
-    AppLayerParserProtoCtx *ctx = &alp_ctx.ctxs[f->protomap][f->alproto];
+    AppLayerParserProtoCtx *ctx = &alp_ctx.ctxs[protomap][alproto];
 
     if (ctx->StateFree != NULL && alstate != NULL)
         ctx->StateFree(alstate);
@@ -1447,6 +1464,11 @@ void AppLayerParserStateCleanup(const Flow *f, void *alstate,
         AppLayerParserStateFree(pstate);
 
     SCReturn;
+}
+
+void AppLayerParserStateCleanup(const Flow *f, void *alstate, AppLayerParserState *pstate)
+{
+    AppLayerParserStateProtoCleanup(f->protomap, f->alproto, alstate, pstate);
 }
 
 static void ValidateParserProtoDump(AppProto alproto, uint8_t ipproto)
@@ -1565,8 +1587,10 @@ void AppLayerParserRegisterProtocolParsers(void)
     RegisterSIPParsers();
     RegisterTemplateRustParsers();
     RegisterRFBParsers();
+    RegisterMQTTParsers();
     RegisterTemplateParsers();
     RegisterRdpParsers();
+    RegisterHTTP2Parsers();
 
     /** IMAP */
     AppLayerProtoDetectRegisterProtocol(ALPROTO_IMAP, "imap");
@@ -1659,7 +1683,7 @@ static AppLayerResult TestProtocolParser(Flow *f, void *test_state, AppLayerPars
 
 /** \brief Function to allocates the Test protocol state memory
  */
-static void *TestProtocolStateAlloc(void)
+static void *TestProtocolStateAlloc(void *orig_state, AppProto proto_orig)
 {
     SCEnter();
     void *s = SCMalloc(sizeof(TestState));

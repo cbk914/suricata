@@ -30,8 +30,6 @@ use crate::applayer::{self, *};
 use crate::core;
 use crate::core::{AppProto,Flow,ALPROTO_FAILED,ALPROTO_UNKNOWN,STREAM_TOCLIENT,STREAM_TOSERVER,sc_detect_engine_state_free};
 
-use crate::log::*;
-
 #[repr(u32)]
 pub enum KRB5Event {
     MalformedData = 0,
@@ -275,7 +273,7 @@ pub fn test_weak_encryption(alg:EncryptionType) -> bool {
 
 /// Returns *mut KRB5State
 #[no_mangle]
-pub extern "C" fn rs_krb5_state_new() -> *mut std::os::raw::c_void {
+pub extern "C" fn rs_krb5_state_new(_orig_state: *mut std::os::raw::c_void, _orig_proto: AppProto) -> *mut std::os::raw::c_void {
     let state = KRB5State::new();
     let boxed = Box::new(state);
     return unsafe{std::mem::transmute(boxed)};

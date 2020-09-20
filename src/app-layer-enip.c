@@ -159,7 +159,7 @@ static int ENIPStateGetEventInfoById(int event_id, const char **event_name,
  *
  *  return state
  */
-static void *ENIPStateAlloc(void)
+static void *ENIPStateAlloc(void *orig_state, AppProto proto_orig)
 {
     SCLogDebug("ENIPStateAlloc");
     void *s = SCMalloc(sizeof(ENIPState));
@@ -327,7 +327,7 @@ static AppLayerResult ENIPParse(Flow *f, void *state, AppLayerParserState *pstat
     ENIPTransaction *tx;
 
     if (input == NULL && AppLayerParserStateIssetFlag(pstate,
-            APP_LAYER_PARSER_EOF))
+            APP_LAYER_PARSER_EOF_TS|APP_LAYER_PARSER_EOF_TC))
     {
         SCReturnStruct(APP_LAYER_OK);
     } else if (input == NULL && input_len != 0) {
@@ -380,6 +380,7 @@ static uint16_t ENIPProbingParser(Flow *f, uint8_t direction,
         return ALPROTO_UNKNOWN;
     }
     uint16_t cmd;
+    uint32_t status;
     int ret = ByteExtractUint16(&cmd, BYTE_LITTLE_ENDIAN, sizeof(uint16_t),
                                 (const uint8_t *) (input));
     if(ret < 0) {
@@ -397,7 +398,23 @@ static uint16_t ENIPProbingParser(Flow *f, uint8_t direction,
         case SEND_UNIT_DATA:
         case INDICATE_STATUS:
         case CANCEL:
-            return ALPROTO_ENIP;
+            ret = ByteExtractUint32(&status, BYTE_LITTLE_ENDIAN,
+                                    sizeof(uint32_t),
+                                    (const uint8_t *) (input + 8));
+            if(ret < 0) {
+                return ALPROTO_FAILED;
+            }
+            switch(status) {
+                case SUCCESS:
+                case INVALID_CMD:
+                case NO_RESOURCES:
+                case INCORRECT_DATA:
+                case INVALID_SESSION:
+                case INVALID_LENGTH:
+                case UNSUPPORTED_PROT_REV:
+                case ENCAP_HEADER_ERROR:
+                    return ALPROTO_ENIP;
+            }
     }
     return ALPROTO_FAILED;
 }
